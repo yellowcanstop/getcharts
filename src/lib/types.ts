@@ -79,7 +79,6 @@ export interface TransformSpec {
   metadata?: {
     interval?: string;
     binCol?: string;
-    binType?: 'interval' | 'pn';
     xColumnType?: ColumnType; 
   };
 }

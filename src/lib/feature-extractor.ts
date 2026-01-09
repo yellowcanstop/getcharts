@@ -161,17 +161,7 @@ export class FeatureExtractor {
             sourceTable: tableName,
             transformType: TransformType.CROSS_GROUP,
             columns: { groupBy: [col1, col2], aggregate: numericalCols },
-            metadata: { binCol: col2, binType: 'interval', interval: feature2.interval, xColumnType: ColumnType.CATEGORICAL }
-          });
-        }
-
-        if (this.shouldApplyPNBinning(feature2)) {
-          this.transformSpecs.push({
-            key: `cross_${col1}_pn_${col2}`,
-            sourceTable: tableName,
-            transformType: TransformType.CROSS_GROUP,
-            columns: { groupBy: [col1, col2], aggregate: numericalCols },
-            metadata: { binCol: col2, binType: 'pn', xColumnType: ColumnType.CATEGORICAL }
+            metadata: { binCol: col2, interval: feature2.interval, xColumnType: ColumnType.CATEGORICAL }
           });
         }
       }
@@ -297,7 +287,7 @@ export class FeatureExtractor {
       }
 
       case TransformType.CROSS_GROUP: {
-        if (metadata?.binType && metadata?.binCol) {
+        if (metadata?.interval && metadata?.binCol) {
           // Cross-column with binning
           const [col1, col2] = group;
           const binCol = metadata.binCol;
@@ -305,19 +295,8 @@ export class FeatureExtractor {
           let orderByExpr = `"${binCol}"`;
           //let orderBy = '';
 
-          switch (metadata.binType) {
-            case 'interval':
-              binExpr = this.getTimeBinExpression(binCol, metadata.interval || 'day');
-              orderByExpr = binExpr;
-              //orderBy = `ORDER BY ${binExpr}`;
-              break;
-            case 'pn':
-              binExpr = `CASE WHEN "${binCol}" > 0 THEN '>0' ELSE '<=0' END`;
-              orderByExpr = binExpr;
-              break;
-            default:
-              throw new Error(`Unknown bin type: ${metadata.binType}`);
-          }
+          binExpr = this.getTimeBinExpression(binCol, metadata.interval || 'day');
+          orderByExpr = binExpr;
 
           const orderBy = orderByExpr ? `ORDER BY "${col1}", ${orderByExpr}` : '';
 
@@ -594,7 +573,7 @@ private createCrossGroupViews(
     
     // Determine chart type
     const isTemporal = spec.transformType === TransformType.INTERVAL_BIN ||
-                       spec.metadata?.binType === 'interval';
+                       spec.metadata?.interval != null;
     const distinctCount = col1Values.length;
     
     let chartType: ChartType;
