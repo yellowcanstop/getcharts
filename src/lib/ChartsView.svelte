@@ -55,7 +55,23 @@
   
 
   function createPlotlyData(view: ChartView) {
-    const { X, Y, chartType, xName, yName } = view;
+    const { X, Y, chartType, xName, yName, seriesNum, seriesNames } = view;
+
+    // Multi-series charts
+    if (seriesNum > 1) {
+      const traces = [];
+      for (let i = 0; i < seriesNum; i++) {
+        traces.push({
+          x: X[i],
+          y: Y[i],
+          type: chartType === ChartType.LINE ? 'scatter' : 'bar',
+          mode: chartType === ChartType.LINE ? 'lines+markers' : undefined,
+          name: seriesNames?.[i] || `Series ${i + 1}`, // You could extract series names from data
+          
+        });
+      }
+      return traces;
+    }
 
     switch (chartType) {
       case ChartType.SCATTER:
@@ -64,7 +80,7 @@
           y: Y[0],
           mode: 'markers',
           type: 'scatter',
-          marker: { size: 8, color: 'rgba(55, 128, 191, 0.7)' },
+          //marker: { size: 8, color: 'rgba(55, 128, 191, 0.7)' },
           name: yName
         }];
 
@@ -74,8 +90,8 @@
           y: Y[0],
           mode: 'lines+markers',
           type: 'scatter',
-          line: { color: 'rgba(55, 128, 191, 0.9)', width: 2 },
-          marker: { size: 6 },
+          //line: { color: 'rgba(55, 128, 191, 0.9)', width: 2 },
+          //marker: { size: 6 },
           name: yName
         }];
 
@@ -84,7 +100,7 @@
           x: X[0],
           y: Y[0],
           type: 'bar',
-          marker: { color: 'rgba(55, 128, 191, 0.7)' },
+          //marker: { color: 'rgba(55, 128, 191, 0.7)' },
           name: yName
         }];
 
@@ -110,11 +126,12 @@
   }
 
   function createPlotlyLayout(view: any) {
-    const { xName, yName, chartType, score } = view;
+    const { xName, yName, chartType, score, description, seriesNum } = view;
     
     const chartTypeNames = ['Scatter Plot', 'Line Chart', 'Bar Chart', 'Pie Chart'];
     const typeLabel = chartTypeNames[chartType] || 'Chart';
-    const titleText = `<b>${typeLabel}</b>: ${xName} vs ${yName}<br><span style="font-size: 12px; color: #666;">Score: ${score.toFixed(2)}</span>`;
+    const titleText = `<b>${typeLabel}</b>: ${description}<br><span style="font-size: 12px; color: #666;">Score: ${score.toFixed(2)}</span>`;
+    //const titleText = `<b>${typeLabel}</b>: ${xName} vs ${yName}<br><span style="font-size: 12px; color: #666;">Score: ${score.toFixed(2)}</span>`;
     //const title = `${chartTypeNames[chartType]}: ${xName} vs ${yName}<br><sub>Score: ${score.toFixed(2)}</sub>`;
 
     // Base layout configuration
@@ -140,8 +157,12 @@
       },
       height: 450, // Slightly taller to account for the extra margin
       autosize: true,
-      showlegend: chartType === ChartType.PIE
+      showlegend: chartType === ChartType.PIE || seriesNum > 1
     };
+
+    if (chartType === ChartType.BAR && seriesNum > 1) {
+      layout.barmode = 'group';
+    }
 
     // 3. Add axes labels for non-pie charts
     if (chartType !== ChartType.PIE) {

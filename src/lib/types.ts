@@ -30,6 +30,7 @@ export interface ChartView {
   yName: string;
   zId: number;
   seriesNum: number;
+  seriesNames?: string[];
   X: any[][];
   Y: any[][];
   chartType: ChartType;
@@ -60,18 +61,25 @@ export interface TransformedData {
   [key: string]: any[];
 }
 
+export enum TransformType {
+  GROUP_DISTINCT = 0,
+  INTERVAL_BIN = 1,
+  PN_BIN = 2,
+  CROSS_GROUP = 3
+}
+
 export interface TransformSpec {
   key: string;  // Unique identifier for this transformation
   sourceTable: string;
-  transformType: 'group_distinct' | 'interval_bin' | 'weekday_bin' | 'hour_bin' | 'pn_bin' | 'cross_group';
+  transformType: TransformType;
   columns: {
-    group?: string[];  // Columns to group by
+    groupBy?: string[];  // Columns to group by
     aggregate?: string[];  // Columns to aggregate
   };
   metadata?: {
     interval?: string;
     binCol?: string;
-    binType?: string;
-    columnType?: ColumnType; 
+    binType?: 'interval' | 'pn';
+    xColumnType?: ColumnType; 
   };
 }

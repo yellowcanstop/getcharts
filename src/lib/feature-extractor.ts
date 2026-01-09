@@ -1,25 +1,20 @@
 import type { AsyncDuckDB } from '@duckdb/duckdb-wasm';
 import { IntervalCalculator } from './interval-calculator';
-import { type ChartView, ChartType, ColumnType, type ColumnFeatures, type TransformedData, type TransformSpec } from './types';
+import { type ChartView, ChartType, ColumnType, type ColumnFeatures, type TransformedData, type TransformSpec, TransformType } from './types';
 
 export class FeatureExtractor {
   private intervalCalculator: IntervalCalculator;
-
-  // Store transformation specs (lightweight - just metadata)
   private transformSpecs: TransformSpec[] = [];
-  
-  // Cache of materialized transformed data (populated on demand)
   public transformedData: TransformedData = {};
-  
-  constructor(private db: AsyncDuckDB) {
-    this.intervalCalculator = new IntervalCalculator(db);
-  }
-
   public features = new Map<string, ColumnFeatures>();
-  public columnsByType: Record<ColumnType, string[]> = {
+  public columnNamesByType: Record<ColumnType, string[]> = {
     [ColumnType.NUMERICAL]: [],
     [ColumnType.CATEGORICAL]: [],
     [ColumnType.TEMPORAL]: []
+  }
+  
+  constructor(private db: AsyncDuckDB) {
+    this.intervalCalculator = new IntervalCalculator(db);
   }
 
   private mapDuckDBType(duckdbType: string): ColumnType {
@@ -36,57 +31,19 @@ export class FeatureExtractor {
     return ColumnType.CATEGORICAL;
   }
 
-  /**
- * Convert DuckDB result values to JavaScript primitives
- * Handles BigInt conversion to avoid runtime errors
- */
-  private convertValue(value: any): any {
-    if (typeof value === 'bigint') {
-      return Number(value);
-    }
-    return value;
-  }
-
-  /**
- * Convert all BigInt values in a row to numbers
- */
-  private convertRow(row: any): any {
+  private convertBigIntToNumber(row: any): any {
     const converted: any = {};
     for (const [key, value] of Object.entries(row)) {
-      converted[key] = this.convertValue(value);
+      converted[key] = typeof value === 'bigint' ? Number(value) : value;
     }
     return converted;
   }
 
-  /*
-  // In your main workflow
-const extractor = new FeatureExtractor(db);
-
-// 1. Extract features from original table
-await extractor.extractFeatures('data');
-
-// 2. Generate transformation specs (lightweight, no queries)
-extractor.generateTransformSpecs('data');
-
-// 3. Materialize ALL transformations in one batch (single query or a few batched queries)
-await extractor.materializeTransforms();
-
-/ 4. Generate chart views from both original and transformed data
-const allViews = await extractor.generateChartViews('data');
-
-// 5. Sort by score and get top recommendations
-const topViews = allViews
-  .sort((a, b) => b.score - a.score)
-  .slice(0, 10);
-
-// Now topViews contains the best chart recommendations ready to render with Plotly
-  */
-  // 1. extract features from original untransformed table
-  public async extractFeatures(tableName='data') {
+  public async extractFeatures(tableName='data'): Promise<void> {
     const conn = await this.db.connect();
     try {
       const summaryResult = await conn.query(`SUMMARIZE ${tableName}`);
-      const summaryRows = summaryResult.toArray().map(row => this.convertRow(row));
+      const summaryRows = summaryResult.toArray().map(row => this.convertBigIntToNumber(row));
       for (const row of summaryRows) {
         const type = this.mapDuckDBType(row.column_type);
         this.features.set(row.column_name, {
@@ -96,18 +53,18 @@ const topViews = allViews
           distinct: row.approx_unique? row.approx_unique : 0,
           ratio: row.count > 0 ? row.approx_unique / row.count : 0
         });
-        this.columnsByType[type].push(row.column_name);
+        this.columnNamesByType[type].push(row.column_name);
       }
 
       // categorical: get distinct values
-      if (this.columnsByType[ColumnType.CATEGORICAL].length > 0) {
+      if (this.columnNamesByType[ColumnType.CATEGORICAL].length > 0) {
         const result = await conn.query(`
           SELECT column_name, value::VARCHAR AS value, COUNT(*) as count
           FROM ${tableName}
-          UNPIVOT (value FOR column_name IN (${this.columnsByType[ColumnType.CATEGORICAL].map(c=>`"${c}"::VARCHAR`).join(', ')}))
+          UNPIVOT (value FOR column_name IN (${this.columnNamesByType[ColumnType.CATEGORICAL].map(c=>`"${c}"::VARCHAR`).join(', ')}))
           GROUP BY column_name, value
         `);
-        const rows = result.toArray().map(row => this.convertRow(row));
+        const rows = result.toArray().map(row => this.convertBigIntToNumber(row));
         for (const row of rows) {
           const feature = this.features.get(row.column_name)!;
           if (!feature.distinctValues) feature.distinctValues = [];
@@ -116,20 +73,20 @@ const topViews = allViews
       }
 
       // temporal: get distinct values + interval bins
-      if (this.columnsByType[ColumnType.TEMPORAL].length > 0) {
+      if (this.columnNamesByType[ColumnType.TEMPORAL].length > 0) {
         const result = await conn.query(`
           SELECT column_name, value, COUNT(*) as count
           FROM ${tableName}
-          UNPIVOT (value FOR column_name IN (${this.columnsByType[ColumnType.TEMPORAL].map(c=>`"${c}"`).join(', ')}))
+          UNPIVOT (value FOR column_name IN (${this.columnNamesByType[ColumnType.TEMPORAL].map(c=>`"${c}"`).join(', ')}))
           GROUP BY column_name, value
         `);
-        const rows = result.toArray().map(row => this.convertRow(row));
+        const rows = result.toArray().map(row => this.convertBigIntToNumber(row));
         for (const row of rows) {
           const feature = this.features.get(row.column_name)!;
           if (!feature.distinctValues) feature.distinctValues = [];
           feature.distinctValues.push([row.value, row.count]);
         }
-        for (const colName of this.columnsByType[ColumnType.TEMPORAL]) {
+        for (const colName of this.columnNamesByType[ColumnType.TEMPORAL]) {
           const feature = this.features.get(colName)!;
           if (feature.min && feature.max && feature.min !== feature.max) {
             this.intervalCalculator.calculateIntervalBins(feature, colName, tableName);
@@ -141,20 +98,21 @@ const topViews = allViews
     }
   }
 
-  // 2. generate transformation specs (no queries. just metadata)
-  public generateTransformSpecs(tableName = 'data'): void {
-    this.transformSpecs = [];
-    const numericalCols = this.columnsByType[ColumnType.NUMERICAL];
+  public generateTransformSpecs(tableName='data'): void {
+    const numericalCols = this.columnNamesByType[ColumnType.NUMERICAL];
+    this.generateBasicTransformSpecs(tableName, numericalCols);
+    this.generateCrossColumnTransformSpecs(tableName, numericalCols);
+  }
 
-    for (const [colName, feature] of this.features) {
-      // Basic transformations
+  private generateBasicTransformSpecs(tableName: string, numericalCols: string[]): void {
+     for (const [colName, feature] of this.features) {
       if (this.shouldApplyGrouping(feature)) {
         this.transformSpecs.push({
           key: `group_${colName}`,
           sourceTable: tableName,
-          transformType: 'group_distinct',
-          columns: { group: [colName], aggregate: numericalCols },
-          metadata: { columnType: feature.type }
+          transformType: TransformType.GROUP_DISTINCT,
+          columns: { groupBy: [colName], aggregate: numericalCols },
+          metadata: { xColumnType: feature.type }
         });
       }
 
@@ -162,107 +120,58 @@ const topViews = allViews
         this.transformSpecs.push({
           key: `interval_${colName}`,
           sourceTable: tableName,
-          transformType: 'interval_bin',
-          columns: { group: [colName], aggregate: numericalCols },
-          metadata: { 
-            interval: feature.interval,
-            columnType: ColumnType.TEMPORAL
-          }
+          transformType: TransformType.INTERVAL_BIN,
+          columns: { groupBy: [colName], aggregate: numericalCols },
+          metadata: { interval: feature.interval, xColumnType: feature.type }
         });
-
-        this.transformSpecs.push({
-          key: `weekday_${colName}`,
-          sourceTable: tableName,
-          transformType: 'weekday_bin',
-          columns: { group: [colName], aggregate: numericalCols },
-          metadata: { 
-            columnType: ColumnType.TEMPORAL
-          }
-        });
-
-        if (this.containsTimeInfo(feature)) {
-          this.transformSpecs.push({
-            key: `hour_${colName}`,
-            sourceTable: tableName,
-            transformType: 'hour_bin',
-            columns: { group: [colName], aggregate: numericalCols },
-            metadata: {
-              columnType: ColumnType.TEMPORAL
-            }
-          });
-        }
       }
 
       if (this.shouldApplyPNBinning(feature)) {
         this.transformSpecs.push({
           key: `pn_${colName}`,
           sourceTable: tableName,
-          transformType: 'pn_bin',
-          columns: { group: [colName], aggregate: numericalCols },
-          metadata: {
-            columnType: ColumnType.CATEGORICAL
-          }
+          transformType: TransformType.PN_BIN,
+          columns: { groupBy: [colName], aggregate: numericalCols },
+          metadata: { xColumnType: feature.type }
         });
       }
     }
-
-    // Cross-column transformations
-    this.generateCrossColumnSpecs(tableName, numericalCols);
   }
 
- private generateCrossColumnSpecs(tableName: string, numericalCols: string[]): void {
-    for (const [col1, f1] of this.features) {
-      if (f1.type !== ColumnType.CATEGORICAL || f1.distinct > 5) continue;
+  private generateCrossColumnTransformSpecs(tableName: string, numericalCols: string[]): void {
+    for (const [col1, feature1] of this.features) {
+      if (feature1.type !== ColumnType.CATEGORICAL || feature1.distinct > 5) continue;
 
-      for (const [col2, f2] of this.features) {
+      for (const [col2, feature2] of this.features) {
         if (col1 === col2) continue;
 
-        // Cross-group transformations
-        if (f2.type === ColumnType.CATEGORICAL || f2.type === ColumnType.TEMPORAL) {
+        if (feature2.type === ColumnType.CATEGORICAL) {
           this.transformSpecs.push({
             key: `cross_${col1}_${col2}`,
             sourceTable: tableName,
-            transformType: 'cross_group',
-            columns: { group: [col1, col2], aggregate: numericalCols },
-            metadata: { columnType: f2.type }
+            transformType: TransformType.CROSS_GROUP,
+            columns: { groupBy: [col1, col2], aggregate: numericalCols },
+            metadata: { xColumnType: ColumnType.CATEGORICAL }
           });
         }
 
-        if (f2.type === ColumnType.TEMPORAL) {
+        if (feature2.type === ColumnType.TEMPORAL) {
           this.transformSpecs.push({
             key: `cross_${col1}_interval_${col2}`,
             sourceTable: tableName,
-            transformType: 'cross_group',
-            columns: { group: [col1, col2], aggregate: numericalCols },
-            metadata: { binCol: col2, binType: 'interval', interval: f2.interval, columnType: ColumnType.TEMPORAL }
+            transformType: TransformType.CROSS_GROUP,
+            columns: { groupBy: [col1, col2], aggregate: numericalCols },
+            metadata: { binCol: col2, binType: 'interval', interval: feature2.interval, xColumnType: ColumnType.CATEGORICAL }
           });
-
-          this.transformSpecs.push({
-            key: `cross_${col1}_weekday_${col2}`,
-            sourceTable: tableName,
-            transformType: 'cross_group',
-            columns: { group: [col1, col2], aggregate: numericalCols },
-            metadata: { binCol: col2, binType: 'weekday', columnType: ColumnType.TEMPORAL }
-          });
-
-          if (this.containsTimeInfo(f2)) {
-            this.transformSpecs.push({
-              key: `cross_${col1}_hour_${col2}`,
-              sourceTable: tableName,
-              transformType: 'cross_group',
-              columns: { group: [col1, col2], aggregate: numericalCols },
-              metadata: { binCol: col2, binType: 'hour', columnType: ColumnType.TEMPORAL }
-            });
-          }
         }
 
-        if (this.shouldApplyPNBinning(f2)) {
+        if (this.shouldApplyPNBinning(feature2)) {
           this.transformSpecs.push({
             key: `cross_${col1}_pn_${col2}`,
             sourceTable: tableName,
-            transformType: 'cross_group',
-            columns: { group: [col1, col2], aggregate: numericalCols },
-            metadata: { binCol: col2, binType: 'pn', columnType: ColumnType.CATEGORICAL }
+            transformType: TransformType.CROSS_GROUP,
+            columns: { groupBy: [col1, col2], aggregate: numericalCols },
+            metadata: { binCol: col2, binType: 'pn', xColumnType: ColumnType.CATEGORICAL }
           });
         }
       }
@@ -304,7 +213,7 @@ const topViews = allViews
             .join('\nUNION ALL\n');
 
           const result = await conn.query(unionQuery);
-          const rows = result.toArray().map(row => this.convertRow(row));
+          const rows = result.toArray().map(row => this.convertBigIntToNumber(row));
           
           // Group results by transform_key
           for (const row of rows) {
@@ -313,7 +222,7 @@ const topViews = allViews
               this.transformedData[key] = [];
             }
             // Remove the internal key before storing
-            const { _transform_key, ...data } = this.convertRow(row);
+            const { _transform_key, ...data } = this.convertBigIntToNumber(row);
             this.transformedData[key].push(data);
           }
         }
@@ -329,7 +238,7 @@ const topViews = allViews
  */
   private getQuerySignature(spec: TransformSpec): string {
     const { transformType, columns, metadata } = spec;
-    const numGroups = columns.group?.length || 0;
+    const numGroups = columns.groupBy?.length || 0;
     const numAggs = columns.aggregate?.length || 0;
     
     // Signature includes: transform type, number of group columns, and number of aggregates
@@ -338,7 +247,7 @@ const topViews = allViews
 
   private buildTransformSQL(spec: TransformSpec): string {
     const { key, sourceTable, transformType, columns, metadata } = spec;
-    const { group = [], aggregate = [] } = columns;
+    const { groupBy: group = [], aggregate = [] } = columns;
 
     const numericalAggs = aggregate.flatMap(col => [
       `SUM("${col}") as "SUM(${col})"`,
@@ -346,7 +255,7 @@ const topViews = allViews
     ]);
 
     switch (transformType) {
-      case 'group_distinct': {
+      case TransformType.GROUP_DISTINCT: {
         const groupCol = group[0];
         return `
           SELECT 
@@ -359,7 +268,7 @@ const topViews = allViews
         `;
       }
 
-      case 'interval_bin': {
+      case TransformType.INTERVAL_BIN: {
         const groupCol = group[0];
         const interval = metadata?.interval || 'day';
         const binExpr = this.getTimeBinExpression(groupCol, interval);
@@ -375,39 +284,7 @@ const topViews = allViews
         `;
       }
 
-      case 'weekday_bin': {
-        const groupCol = group[0];
-        return `
-          SELECT 
-            '${key}' as _transform_key,
-            CASE dayofweek("${groupCol}")
-              WHEN 1 THEN 'Mon' WHEN 2 THEN 'Tue' WHEN 3 THEN 'Wed'
-              WHEN 4 THEN 'Thur' WHEN 5 THEN 'Fri' WHEN 6 THEN 'Sat'
-              WHEN 0 THEN 'Sun'
-            END as "${groupCol}",
-            COUNT(*) as "COUNT(${groupCol})"
-            ${numericalAggs.length > 0 ? ', ' + numericalAggs.join(', ') : ''}
-          FROM ${sourceTable}
-          GROUP BY dayofweek("${groupCol}")
-          ORDER BY dayofweek("${groupCol}")
-        `;
-      }
-
-      case 'hour_bin': {
-        const groupCol = group[0];
-        return `
-          SELECT 
-            '${key}' as _transform_key,
-            CAST(hour("${groupCol}") AS VARCHAR) as "${groupCol} oclock",
-            COUNT(*) as "COUNT(${groupCol})"
-            ${numericalAggs.length > 0 ? ', ' + numericalAggs.join(', ') : ''}
-          FROM ${sourceTable}
-          GROUP BY hour("${groupCol}")
-          ORDER BY hour("${groupCol}")
-        `;
-      }
-
-      case 'pn_bin': {
+      case TransformType.PN_BIN: {
         const groupCol = group[0];
         return `
           SELECT 
@@ -419,7 +296,7 @@ const topViews = allViews
         `;
       }
 
-      case 'cross_group': {
+      case TransformType.CROSS_GROUP: {
         if (metadata?.binType && metadata?.binCol) {
           // Cross-column with binning
           const [col1, col2] = group;
@@ -434,20 +311,12 @@ const topViews = allViews
               orderByExpr = binExpr;
               //orderBy = `ORDER BY ${binExpr}`;
               break;
-            case 'weekday':
-              binExpr = `CASE dayofweek("${binCol}") WHEN 1 THEN 'Mon' WHEN 2 THEN 'Tue' WHEN 3 THEN 'Wed' WHEN 4 THEN 'Thur' WHEN 5 THEN 'Fri' WHEN 6 THEN 'Sat' WHEN 0 THEN 'Sun' END`;
-              orderByExpr = binExpr;
-              //orderBy = `ORDER BY dayofweek("${binCol}")`;
-              break;
-            case 'hour':
-              binExpr = `CAST(hour("${binCol}") AS VARCHAR)`;
-              orderByExpr = binExpr;
-              //orderBy = `ORDER BY hour("${binCol}")`;
-              break;
             case 'pn':
               binExpr = `CASE WHEN "${binCol}" > 0 THEN '>0' ELSE '<=0' END`;
               orderByExpr = binExpr;
               break;
+            default:
+              throw new Error(`Unknown bin type: ${metadata.binType}`);
           }
 
           const orderBy = orderByExpr ? `ORDER BY "${col1}", ${orderByExpr}` : '';
@@ -513,14 +382,8 @@ const topViews = allViews
 
   private shouldApplyPNBinning(feature: ColumnFeatures): boolean {
     return feature.type === ColumnType.NUMERICAL && 
-           feature.min != null && 
-           feature.min < 0;
-  }
-
-  private containsTimeInfo(feature: ColumnFeatures): boolean {
-    // You'd need to detect this during feature extraction
-    // For now, assume all timestamps have time info
-    return true;
+           feature.min != null && feature.min < 0 &&
+           feature.max != null && feature.max > 0;
   }
 
   /**
@@ -626,7 +489,7 @@ const topViews = allViews
       }
       
       const result = await conn.query(query);
-      const rows = result.toArray().map(row => this.convertRow(row));
+      const rows = result.toArray().map(row => this.convertBigIntToNumber(row));
       
       if (rows.length === 0) return null;
       
@@ -645,7 +508,7 @@ const topViews = allViews
         chartType,
         tupleNum: rows.length,
         score: this.calculateScore(xFeature, yFeature, chartType, rows.length),
-        description: `${this.getChartTypeName(chartType)}: ${xCol} vs ${yCol}`
+        description: `${xCol} vs ${yCol}`
       };
     } finally {
       await conn.close();
@@ -659,24 +522,31 @@ const topViews = allViews
     const views: ChartView[] = [];
     
     // Determine which columns are dimensions (group) and which are measures (aggregates)
-    const groupCols = spec.columns.group || [];
+    const groupCols = spec.columns.groupBy || [];
+    const isCrossGroup = groupCols.length == 2;
     const aggCols = Object.keys(data[0]).filter(col => 
       col.startsWith('SUM(') || col.startsWith('AVG(') || col.startsWith('COUNT')
     );
+
+    if (isCrossGroup) {
+    // Handle cross-group: create multi-series charts
+    views.push(...this.createCrossGroupViews(spec, data, groupCols, aggCols));
+    } else {
     
     // For each dimension, pair it with each measure
-    for (const groupCol of groupCols) {
-      // Get the actual column name in the transformed data (might be binned)
-      const actualGroupCol = this.getTransformedColumnName(spec, groupCol);
-      
-      for (const aggCol of aggCols) {
-        const chartTypes = this.determineTransformedChartTypes(spec, actualGroupCol, aggCol, data);
+      for (const groupCol of groupCols) {
+        // Get the actual column name in the transformed data (might be binned)
+        const actualGroupCol = this.getTransformedColumnName(spec, groupCol);
         
-        for (const chartType of chartTypes) {
-          const view = this.createViewFromTransformedRow(
-            spec, actualGroupCol, aggCol, chartType, data
-          );
-          if (view) views.push(view);
+        for (const aggCol of aggCols) {
+          const chartTypes = this.determineTransformedChartTypes(spec, actualGroupCol, aggCol, data);
+          
+          for (const chartType of chartTypes) {
+            const view = this.createViewFromTransformedRow(
+              spec, actualGroupCol, aggCol, chartType, data
+            );
+            if (view) views.push(view);
+          }
         }
       }
     }
@@ -685,18 +555,103 @@ const topViews = allViews
   }
 
   /**
+ * Create multi-series chart views from cross-group data
+ */
+private createCrossGroupViews(
+  spec: TransformSpec,
+  data: any[],
+  groupCols: string[],
+  aggCols: string[]
+): ChartView[] {
+  const views: ChartView[] = [];
+  const [col1, col2] = groupCols;
+  
+  // Get actual column names (might be binned)
+  const actualCol1 = col1;
+  const actualCol2 = this.getTransformedColumnName(spec, col2);
+  
+  // For each aggregate, create a grouped chart
+  for (const aggCol of aggCols) {
+    // Pivot data: group by col1, create series for each col2 value
+    const col2Values = [...new Set(data.map(row => row[actualCol2]))];
+    const col1Values = [...new Set(data.map(row => row[actualCol1]))];
+    
+    // Skip if too many series (would be unreadable)
+    if (col2Values.length > 10) continue;
+    
+    // Build X and Y arrays for multi-series
+    const X: any[][] = [];
+    const Y: any[][] = [];
+    
+    for (const col2Val of col2Values) {
+      const seriesData = data.filter(row => row[actualCol2] === col2Val);
+      const xVals = seriesData.map(row => row[actualCol1]);
+      const yVals = seriesData.map(row => row[aggCol]);
+      
+      X.push(xVals);
+      Y.push(yVals);
+    }
+    
+    // Determine chart type
+    const isTemporal = spec.transformType === TransformType.INTERVAL_BIN ||
+                       spec.metadata?.binType === 'interval';
+    const distinctCount = col1Values.length;
+    
+    let chartType: ChartType;
+    if (isTemporal) {
+      chartType = distinctCount < 7 ? ChartType.BAR : ChartType.LINE;
+    } else {
+      chartType = ChartType.BAR; // Cross-groups typically use bar charts
+    }
+    
+    // Create synthetic features
+    const xFeature: ColumnFeatures = {
+      type: spec.metadata?.xColumnType || ColumnType.CATEGORICAL,
+      min: col1Values[0],
+      max: col1Values[col1Values.length - 1],
+      distinct: col1Values.length,
+      ratio: col1Values.length / data.length
+    };
+    
+    const allYValues = Y.flat();
+    const yFeature: ColumnFeatures = {
+      type: ColumnType.NUMERICAL,
+      min: Math.min(...allYValues),
+      max: Math.max(...allYValues),
+      distinct: new Set(allYValues).size,
+      ratio: new Set(allYValues).size / allYValues.length
+    };
+    
+    views.push({
+      xFeature,
+      yFeature,
+      xName: actualCol1,
+      yName: aggCol,
+      zId: -1,
+      seriesNum: col2Values.length,
+      seriesNames: col2Values.map(v => String(v)),
+      X,
+      Y,
+      chartType,
+      tupleNum: data.length,
+      score: this.calculateScore(xFeature, yFeature, chartType, data.length),
+      description: `${spec.key} - ${actualCol1} vs ${aggCol} (by ${actualCol2})`
+    });
+  }
+  
+  return views;
+}
+
+  /**
    * Get the actual column name in transformed data (handles binned columns)
    */
   private getTransformedColumnName(spec: TransformSpec, originalCol: string): string {
     // Check the transform type and return the appropriate column name
     switch (spec.transformType) {
-      case 'interval_bin':
+      case TransformType.INTERVAL_BIN:
         return `${originalCol}/(${spec.metadata?.interval || 'day'})`;
-      case 'hour_bin':
-        return `${originalCol} oclock`;
-      case 'weekday_bin':
-      case 'group_distinct':
-      case 'pn_bin':
+      case TransformType.GROUP_DISTINCT:
+      case TransformType.PN_BIN:
       default:
         return originalCol;
     }
@@ -715,9 +670,7 @@ const topViews = allViews
     const distinctCount = new Set(data.map(row => row[groupCol])).size;
     
     // Check if it's temporal data
-    const isTemporal = spec.transformType === 'interval_bin' || 
-                       spec.transformType === 'weekday_bin' || 
-                       spec.transformType === 'hour_bin';
+    const isTemporal = spec.transformType === TransformType.INTERVAL_BIN; 
     
     // Check if aggregate has positive values (for pie chart)
     const hasPositiveValues = data.every(row => row[aggCol] > 0);
@@ -755,7 +708,7 @@ const topViews = allViews
     
     // Create synthetic features for the transformed columns
     const xFeature: ColumnFeatures = {
-      type: spec.metadata?.columnType || ColumnType.CATEGORICAL,
+      type: spec.metadata?.xColumnType || ColumnType.CATEGORICAL,
       min: X[0][0],
       max: X[0][X[0].length - 1],
       distinct: new Set(X[0]).size,
@@ -782,7 +735,7 @@ const topViews = allViews
       chartType,
       tupleNum: data.length,
       score: this.calculateScore(xFeature, yFeature, chartType, data.length),
-      description: `${this.getChartTypeName(chartType)}: ${spec.key} - ${groupCol} vs ${aggCol}`
+      description: `${spec.key} - ${groupCol} vs ${aggCol}`
     };
   }
 
@@ -884,19 +837,6 @@ const topViews = allViews
     if (tupleNum > 10000) score *= 0.8;
     
     return score;
-  }
-
-  /**
-   * Get human-readable chart type name
-   */
-  private getChartTypeName(type: ChartType): string {
-    const names = {
-      [ChartType.SCATTER]: 'Scatter',
-      [ChartType.LINE]: 'Line',
-      [ChartType.BAR]: 'Bar',
-      [ChartType.PIE]: 'Pie'
-    };
-    return names[type] || 'Unknown';
   }
   
 }
