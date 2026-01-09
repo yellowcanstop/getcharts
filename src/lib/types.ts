@@ -10,10 +10,8 @@ export interface ColumnFeatures {
   max: any;
   distinct: number;
   ratio: number;
-  binNum?: number;
   interval?: string;
   distinctValues?: Array<[any, number]>;
-  intervalBins?: any[];
 }
 
 export enum ChartType {
@@ -28,13 +26,11 @@ export interface ChartView {
   yFeature: ColumnFeatures;
   xName: string;
   yName: string;
-  zId: number;
   seriesNum: number;
   seriesNames?: string[];
   X: any[][];
   Y: any[][];
   chartType: ChartType;
-  tupleNum: number;
   score: number;
   description: string;
 }

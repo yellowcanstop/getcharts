@@ -260,7 +260,7 @@ export class FeatureExtractor {
 
       case TransformType.INTERVAL_BIN: {
         const groupCol = groupBy[0];
-        const interval = metadata?.interval || 'day';
+        const interval = metadata?.interval || 'year';
         const binExpr = this.getTimeBinExpression(groupCol, interval);
         return `
           SELECT 
@@ -295,7 +295,7 @@ export class FeatureExtractor {
           let orderByExpr = `"${binCol}"`;
           //let orderBy = '';
 
-          binExpr = this.getTimeBinExpression(binCol, metadata.interval || 'day');
+          binExpr = this.getTimeBinExpression(binCol, metadata.interval || 'year');
           orderByExpr = binExpr;
 
           const orderBy = orderByExpr ? `ORDER BY "${col1}", ${orderByExpr}` : '';
@@ -347,7 +347,7 @@ export class FeatureExtractor {
       'quarter': `date_trunc('quarter', "${colName}")`,
       'year': `date_trunc('year', "${colName}")`
     };
-    return intervalMap[interval] || intervalMap['day'];
+    return intervalMap[interval] || intervalMap['year'];
   }
 
   public async generateChartViews(tableName = 'data'): Promise<ChartView[]> {
@@ -453,12 +453,10 @@ export class FeatureExtractor {
         yFeature,
         xName: xCol,
         yName: yCol,
-        zId: -1,
         seriesNum: 1,
         X,
         Y,
         chartType,
-        tupleNum: rows.length,
         score: this.calculateScore(xFeature, yFeature, chartType, rows.length),
         description: `${xCol} vs ${yCol}`
       };
@@ -579,13 +577,11 @@ private createCrossGroupViews(
       yFeature,
       xName: actualCol1,
       yName: aggCol,
-      zId: -1,
       seriesNum: col2Values.length,
       seriesNames: col2Values.map(v => String(v)),
       X,
       Y,
       chartType,
-      tupleNum: data.length,
       score: this.calculateScore(xFeature, yFeature, chartType, data.length),
       description: `${spec.key} - ${actualCol1} vs ${aggCol} (by ${actualCol2})`
     });
@@ -601,7 +597,7 @@ private createCrossGroupViews(
     // Check the transform type and return the appropriate column name
     switch (spec.transformType) {
       case TransformType.INTERVAL_BIN:
-        return `${originalCol}/(${spec.metadata?.interval || 'day'})`;
+        return `${originalCol}/(${spec.metadata?.interval || 'year'})`;
       case TransformType.GROUP_DISTINCT:
       case TransformType.PN_BIN:
       default:
@@ -680,12 +676,10 @@ private createCrossGroupViews(
       yFeature,
       xName: groupCol,
       yName: aggCol,
-      zId: -1,
       seriesNum: 1,
       X,
       Y,
       chartType,
-      tupleNum: data.length,
       score: this.calculateScore(xFeature, yFeature, chartType, data.length),
       description: `${spec.key} - ${groupCol} vs ${aggCol}`
     };

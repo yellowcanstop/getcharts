@@ -15,20 +15,6 @@
       error = "Failed to generate charts: " + e.message;
     }
   });
-
-  /*
-  function renderChart(element: HTMLDivElement, view: ChartView) {
-    const data = createPlotlyData(view);
-    const layout = createPlotlyLayout(view);
-    Plotly.newPlot(element, data, layout, { responsive: true });
-    return {
-      destroy() {
-        Plotly.purge(element);
-      }
-    }
-  }
-  */
-
   
   function renderCharts() {
     if (!chartsContainer) return;
@@ -80,7 +66,6 @@
           y: Y[0],
           mode: 'markers',
           type: 'scatter',
-          //marker: { size: 8, color: 'rgba(55, 128, 191, 0.7)' },
           name: yName
         }];
 
@@ -90,8 +75,6 @@
           y: Y[0],
           mode: 'lines+markers',
           type: 'scatter',
-          //line: { color: 'rgba(55, 128, 191, 0.9)', width: 2 },
-          //marker: { size: 6 },
           name: yName
         }];
 
@@ -100,7 +83,6 @@
           x: X[0],
           y: Y[0],
           type: 'bar',
-          //marker: { color: 'rgba(55, 128, 191, 0.7)' },
           name: yName
         }];
 
@@ -109,15 +91,6 @@
           labels: X[0],
           values: Y[0],
           type: 'pie',
-          marker: {
-            colors: [
-              'rgba(55, 128, 191, 0.9)',
-              'rgba(219, 64, 82, 0.9)',
-              'rgba(128, 177, 211, 0.9)',
-              'rgba(255, 127, 14, 0.9)',
-              'rgba(44, 160, 44, 0.9)'
-            ]
-          }
         }];
 
       default:
@@ -169,24 +142,6 @@
       layout.xaxis = { title: { text: xName, standoff: 15 } };
       layout.yaxis = { title: { text: yName, standoff: 15 } };
     }
-
-    /*
-    if (chartType === ChartType.PIE) {
-      return {
-        title,
-        showlegend: true,
-        height: 400
-      };
-    }
-
-    return {
-      title,
-      xaxis: { title: xName },
-      yaxis: { title: yName },
-      showlegend: false,
-      height: 400
-    };
-    */
    return layout;
   }
 
