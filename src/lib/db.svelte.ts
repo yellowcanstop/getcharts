@@ -40,7 +40,7 @@ class DuckDBManager {
       const extractor = new FeatureExtractor(this.db!);
       await extractor.extractFeatures('data');
       extractor.generateTransformSpecs('data');
-      await extractor.materializeTransforms();
+      await extractor.populateTransformedData();
       this.recommendedCharts = await extractor.generateChartViews('data');
     } catch(e) {
       console.error('Failed to generate recommendations:', e);

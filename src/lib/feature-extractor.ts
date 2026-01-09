@@ -1,9 +1,7 @@
 import type { AsyncDuckDB } from '@duckdb/duckdb-wasm';
-import { IntervalCalculator } from './interval-calculator';
-import { type ChartView, ChartType, ColumnType, type ColumnFeatures, type TransformedData, type TransformSpec, TransformType } from './types';
+import { type ChartView, ChartType, ColumnType, type ColumnFeatures, type TransformedData, type TransformSpec, TransformType, TimeInterval } from './types';
 
 export class FeatureExtractor {
-  private intervalCalculator: IntervalCalculator;
   private transformSpecs: TransformSpec[] = [];
   public transformedData: TransformedData = {};
   public features = new Map<string, ColumnFeatures>();
@@ -13,9 +11,7 @@ export class FeatureExtractor {
     [ColumnType.TEMPORAL]: []
   }
   
-  constructor(private db: AsyncDuckDB) {
-    this.intervalCalculator = new IntervalCalculator(db);
-  }
+  constructor(private db: AsyncDuckDB) {}
 
   private mapDuckDBType(duckdbType: string): ColumnType {
     const type = duckdbType.toLowerCase();
@@ -89,13 +85,36 @@ export class FeatureExtractor {
         for (const colName of this.columnNamesByType[ColumnType.TEMPORAL]) {
           const feature = this.features.get(colName)!;
           if (feature.min && feature.max && feature.min !== feature.max) {
-            this.intervalCalculator.calculateIntervalBins(feature, colName, tableName);
+            const minDate = new Date(feature.min);
+            const maxDate = new Date(feature.max);
+            feature.interval = this.getInterval(minDate, maxDate);
           }
         }
       }
     } finally {
       await conn.close();
     }
+  }
+
+  private getInterval(min: Date, max: Date): TimeInterval {
+    if (min.getFullYear() === max.getFullYear() &&
+        min.getMonth() === max.getMonth() &&
+        min.getDate() === max.getDate()) {
+      if (min.getHours() === max.getHours()) {
+        if (min.getMinutes() === max.getMinutes()) {
+          return TimeInterval.SECOND;
+        }
+        return TimeInterval.MINUTE;
+      }
+      return TimeInterval.HOUR;
+    }
+    if (min.getFullYear() === max.getFullYear()) {
+      if (min.getMonth() === max.getMonth()) {
+        return TimeInterval.DAY;
+      }
+      return TimeInterval.MONTH;
+    }
+    return TimeInterval.YEAR;
   }
 
   public generateTransformSpecs(tableName='data'): void {
@@ -106,7 +125,7 @@ export class FeatureExtractor {
 
   private generateBasicTransformSpecs(tableName: string, numericalCols: string[]): void {
      for (const [colName, feature] of this.features) {
-      if (this.shouldApplyGrouping(feature)) {
+      if ((feature.type === ColumnType.CATEGORICAL || feature.type === ColumnType.TEMPORAL) && feature.ratio < 1.0) {
         this.transformSpecs.push({
           key: `group_${colName}`,
           sourceTable: tableName,
@@ -126,7 +145,7 @@ export class FeatureExtractor {
         });
       }
 
-      if (this.shouldApplyPNBinning(feature)) {
+      if (feature.type === ColumnType.NUMERICAL && feature.min != null && feature.min < 0 && feature.max != null && feature.max > 0) {
         this.transformSpecs.push({
           key: `pn_${colName}`,
           sourceTable: tableName,
@@ -168,21 +187,15 @@ export class FeatureExtractor {
     }
   }
 
-  /**
-   * 3. Materialize ALL transformations in one batch query using UNION ALL
-   * This is much faster than individual queries
-   */
-  public async materializeTransforms(): Promise<void> {
+  public async populateTransformedData(): Promise<void> {
     if (this.transformSpecs.length === 0) return;
 
     const conn = await this.db.connect();
     try {
-      // Build queries and group by column signature to ensure UNION compatibility
+      // group queries by column signature to ensure UNION compatibility
       const queryGroups = new Map<string, { spec: TransformSpec; sql: string }[]>();
-      
       for (const spec of this.transformSpecs) {
         const sql = this.buildTransformSQL(spec);
-        // Create a signature based on column structure
         const signature = this.getQuerySignature(spec);
         if (!queryGroups.has(signature)) {
           queryGroups.set(signature, []);
@@ -190,28 +203,21 @@ export class FeatureExtractor {
         queryGroups.get(signature)!.push({ spec, sql });
       }
       
-      // Execute each group separately
       for (const [signature, queries] of queryGroups) {
         const BATCH_SIZE = 20;
         for (let i = 0; i < queries.length; i += BATCH_SIZE) {
           const batch = queries.slice(i, i + BATCH_SIZE);
-          
-          //const unionQuery = batch.map(q => q.sql).join('\nUNION ALL\n');
-          // Wrap each query in a subquery to handle ORDER BY clauses
-          const unionQuery = batch
-            .map(q => `(${q.sql.trim()})`)
-            .join('\nUNION ALL\n');
-
+          const unionQuery = batch.map(q => `(${q.sql.trim()})`).join('\nUNION ALL\n');
           const result = await conn.query(unionQuery);
           const rows = result.toArray().map(row => this.convertBigIntToNumber(row));
-          
-          // Group results by transform_key
+
+          // group results by transform_key
           for (const row of rows) {
             const key = row._transform_key;
             if (!this.transformedData[key]) {
               this.transformedData[key] = [];
             }
-            // Remove the internal key before storing
+            // remove the internal key before storing
             const { _transform_key, ...data } = this.convertBigIntToNumber(row);
             this.transformedData[key].push(data);
           }
@@ -222,22 +228,16 @@ export class FeatureExtractor {
     }
   }
 
-  /**
- * Create a signature for a query based on its column structure
- * Queries with the same signature can be combined with UNION ALL
- */
   private getQuerySignature(spec: TransformSpec): string {
-    const { transformType, columns, metadata } = spec;
-    const numGroups = columns.groupBy?.length || 0;
-    const numAggs = columns.aggregate?.length || 0;
-    
-    // Signature includes: transform type, number of group columns, and number of aggregates
-    return `${transformType}_g${numGroups}_a${numAggs}`;
+    const { transformType, columns } = spec;
+    const colCountForGroupBy = columns.groupBy?.length || 0;
+    const colCountForAggregate = columns.aggregate?.length || 0;
+    return `${transformType}_g${colCountForGroupBy}_a${colCountForAggregate}`;
   }
 
   private buildTransformSQL(spec: TransformSpec): string {
     const { key, sourceTable, transformType, columns, metadata } = spec;
-    const { groupBy: group = [], aggregate = [] } = columns;
+    const { groupBy = [], aggregate = [] } = columns;
 
     const numericalAggs = aggregate.flatMap(col => [
       `SUM("${col}") as "SUM(${col})"`,
@@ -246,7 +246,7 @@ export class FeatureExtractor {
 
     switch (transformType) {
       case TransformType.GROUP_DISTINCT: {
-        const groupCol = group[0];
+        const groupCol = groupBy[0];
         return `
           SELECT 
             '${key}' as _transform_key,
@@ -259,7 +259,7 @@ export class FeatureExtractor {
       }
 
       case TransformType.INTERVAL_BIN: {
-        const groupCol = group[0];
+        const groupCol = groupBy[0];
         const interval = metadata?.interval || 'day';
         const binExpr = this.getTimeBinExpression(groupCol, interval);
         return `
@@ -275,7 +275,7 @@ export class FeatureExtractor {
       }
 
       case TransformType.PN_BIN: {
-        const groupCol = group[0];
+        const groupCol = groupBy[0];
         return `
           SELECT 
             '${key}' as _transform_key,
@@ -289,7 +289,7 @@ export class FeatureExtractor {
       case TransformType.CROSS_GROUP: {
         if (metadata?.interval && metadata?.binCol) {
           // Cross-column with binning
-          const [col1, col2] = group;
+          const [col1, col2] = groupBy;
           const binCol = metadata.binCol;
           let binExpr = `"${binCol}"`;
           let orderByExpr = `"${binCol}"`;
@@ -313,7 +313,7 @@ export class FeatureExtractor {
           `;
         } else {
           // Simple cross-group
-          const groupCols = group.map(c => `"${c}"`).join(', ');
+          const groupCols = groupBy.map(c => `"${c}"`).join(', ');
           return `
             SELECT 
               '${key}' as _transform_key,
@@ -331,9 +331,6 @@ export class FeatureExtractor {
     }
   }
 
-  /**
-   * Get transformed data for a specific transformation
-   */
   public getTransformedData(key: string): any[] {
     return this.transformedData[key] || [];
   }
@@ -353,39 +350,15 @@ export class FeatureExtractor {
     return intervalMap[interval] || intervalMap['day'];
   }
 
-  private shouldApplyGrouping(feature: ColumnFeatures): boolean {
-    return (feature.type === ColumnType.TEMPORAL || 
-            feature.type === ColumnType.CATEGORICAL) && 
-            feature.ratio < 1.0;
-  }
-
-  private shouldApplyPNBinning(feature: ColumnFeatures): boolean {
-    return feature.type === ColumnType.NUMERICAL && 
-           feature.min != null && feature.min < 0 &&
-           feature.max != null && feature.max > 0;
-  }
-
-  /**
-   * 4. Generate chart views from materialized transformations and original data
-   * This should be called after materializeTransforms()
-   */
   public async generateChartViews(tableName = 'data'): Promise<ChartView[]> {
     const views: ChartView[] = [];
-    
-    // Generate views from original data (untransformed)
     const originalViews = await this.generateOriginalDataViews(tableName);
     views.push(...originalViews);
-    
-    // Generate views from transformed data
     const transformedViews = await this.generateTransformedDataViews();
     views.push(...transformedViews);
-    
     return views;
   }
 
-  /**
-   * Generate chart views from the original untransformed data
-   */
   private async generateOriginalDataViews(tableName: string): Promise<ChartView[]> {
     const views: ChartView[] = [];
     const columns = Array.from(this.features.keys());
