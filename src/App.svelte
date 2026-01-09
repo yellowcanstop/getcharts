@@ -2,7 +2,6 @@
   import { dbManager } from './lib/db.svelte';
   import { onMount } from 'svelte';
   import Uploader from './lib/Uploader.svelte';
-  import Output from './lib/Output.svelte';
   import ChartsView from './lib/ChartsView.svelte';
 
   onMount(async () => {

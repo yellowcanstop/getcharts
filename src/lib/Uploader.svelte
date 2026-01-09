@@ -17,6 +17,7 @@
 
       await db.registerFileHandle(file.name, file, DuckDBDataProtocol.BROWSER_FILEREADER, true);
       const conn = await db.connect();
+      await conn.query(`DROP TABLE IF EXISTS data;`);
       await conn.query(`CREATE TABLE data AS SELECT * FROM read_csv_auto('${file.name}')`);
       await conn.close();
       dbManager.view = 'chart';

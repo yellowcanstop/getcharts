@@ -34,19 +34,6 @@ class DuckDBManager {
     }
   }
 
-  async showOutput() {
-    let output = '';
-    const extractor = new FeatureExtractor(this.db!);
-    await extractor.extractFeatures('data');
-    extractor.generateTransformSpecs('data');
-    await extractor.materializeTransforms();
-    const views = await extractor.generateChartViews('data');
-    for (const view of views) {
-      output += JSON.stringify(view, null, 2) + '\n\n';
-    }
-    return output
-  }
-
   async generateRecommendations() {
     try {
       this.isGenerating = true;
