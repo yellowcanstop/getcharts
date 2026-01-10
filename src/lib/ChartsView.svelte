@@ -136,6 +136,7 @@
 
   function handleReset() {
     dbManager.reset();
+    error = "";
   }
 </script>
 
