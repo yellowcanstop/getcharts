@@ -367,16 +367,14 @@ export class FeatureExtractor {
         const xFeature = this.features.get(xCol)!;
         const yFeature = this.features.get(yCol)!;
 
-        let chartType: ChartType;
+        const chartTypes: ChartType[] = [];
         if (xFeature.type === ColumnType.NUMERICAL && yFeature.type === ColumnType.NUMERICAL && i < j) {
-          chartType = ChartType.SCATTER;
+          chartTypes.push(ChartType.SCATTER);
         }
         if (xFeature.type === ColumnType.TEMPORAL && yFeature.type === ColumnType.NUMERICAL && i < j) {
-          chartType = ChartType.LINE;
+          chartTypes.push(ChartType.LINE);
         }
 
-        const chartTypes = this.getChartTypesForOriginal(xFeature, yFeature, i, j);
-        
         for (const chartType of chartTypes) {
           const view = await this.createViewFromOriginalData(
             xCol, yCol, xFeature, yFeature, chartType, tableName
@@ -415,15 +413,12 @@ export class FeatureExtractor {
     
     try {
       let query: string;
-      
-      
         query = `
           SELECT "${xCol}" as x, "${yCol}" as y
           FROM ${tableName}
           WHERE "${xCol}" IS NOT NULL AND "${yCol}" IS NOT NULL
           ORDER BY "${xCol}"
         `;
-      
       
       const result = await conn.query(query);
       const rows = result.toArray().map(row => this.convertBigIntToNumber(row));
@@ -671,33 +666,6 @@ private createCrossGroupViews(
       description: `${spec.key} - ${groupCol} vs ${aggCol}`
     };
   }
-
-  private getChartTypesForOriginal(fi: ColumnFeatures, fj: ColumnFeatures, i: number, j: number): ChartType[] {
-    /*
-    if (fi.type === ColumnType.CATEGORICAL && fj.type === ColumnType.NUMERICAL && fi.ratio === 1.0) {
-      if (fi.distinct <= 10 && fj.min !== null && fj.min > 0) {
-        return [ChartType.PIE];
-      }
-      return [ChartType.BAR];
-    }
-  
-    if (fi.type === ColumnType.TEMPORAL && fj.type === ColumnType.NUMERICAL && fi.ratio === 1.0) {
-      return this.getTemporalNumericalCharts(fi.distinct);
-    }
-    */
-    if (fi.type === ColumnType.NUMERICAL && 
-        fj.type === ColumnType.NUMERICAL && 
-        i < j) {
-      return [ChartType.SCATTER];
-    }
-    
-    if (fi.type === ColumnType.TEMPORAL && fj.type === ColumnType.NUMERICAL && i < j) {
-      return [ChartType.LINE]
-    }
-
-    return [];
-  }
-
 
   /**
    * Check if a column name indicates it's an average column
