@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { dbManager } from './db.svelte';
   import Plotly from 'plotly.js-dist-min';
-  import { ChartType, type ChartView } from './types';
+  import { ChartType, ColumnType, type ChartView } from './types';
 
   let error = $state("");
   let chartsContainer: HTMLDivElement;
@@ -19,7 +19,6 @@
   function renderCharts() {
     if (!chartsContainer) return;
     
-    // Clear previous charts
     chartsContainer.innerHTML = '';
     
     if (dbManager.recommendedCharts.length === 0) {
@@ -27,7 +26,7 @@
       return;
     }
 
-    dbManager.recommendedCharts.forEach((view, index) => {
+    dbManager.recommendedCharts.forEach(view => {
       const chartDiv = document.createElement('div');
       chartDiv.className = 'chart-item';
       chartsContainer.appendChild(chartDiv);
@@ -39,21 +38,19 @@
     });
   }
   
-
   function createPlotlyData(view: ChartView) {
-    const { X, Y, chartType, xName, yName, seriesNum, seriesNames } = view;
+    const { X, Y, chartType, seriesNum, seriesNames, xFeature } = view;
 
-    // Multi-series charts
+    // multi-series charts
     if (seriesNum > 1) {
       const traces = [];
       for (let i = 0; i < seriesNum; i++) {
         traces.push({
           x: X[i],
           y: Y[i],
-          type: chartType === ChartType.LINE ? 'scatter' : 'bar',
+          type: chartType === ChartType.LINE ? 'line' : 'bar',
           mode: chartType === ChartType.LINE ? 'lines+markers' : undefined,
-          name: seriesNames?.[i] || `Series ${i + 1}`, // You could extract series names from data
-          
+          name: seriesNames?.[i] || `Series ${i + 1}`,
         });
       }
       return traces;
@@ -66,33 +63,26 @@
           y: Y[0],
           mode: 'markers',
           type: 'scatter',
-          name: yName
         }];
-
       case ChartType.LINE:
         return [{
           x: X[0],
           y: Y[0],
           mode: 'lines+markers',
-          type: 'scatter',
-          name: yName
+          type: 'line',
         }];
-
       case ChartType.BAR:
         return [{
           x: X[0],
           y: Y[0],
           type: 'bar',
-          name: yName
         }];
-
       case ChartType.PIE:
         return [{
           labels: X[0],
           values: Y[0],
           type: 'pie',
         }];
-
       default:
         return [];
     }
@@ -104,12 +94,8 @@
     const chartTypeNames = ['Scatter Plot', 'Line Chart', 'Bar Chart', 'Pie Chart'];
     const typeLabel = chartTypeNames[chartType] || 'Chart';
     const titleText = `<b>${typeLabel}</b>: ${description}<br><span style="font-size: 12px; color: #666;">Score: ${score.toFixed(2)}</span>`;
-    //const titleText = `<b>${typeLabel}</b>: ${xName} vs ${yName}<br><span style="font-size: 12px; color: #666;">Score: ${score.toFixed(2)}</span>`;
-    //const title = `${chartTypeNames[chartType]}: ${xName} vs ${yName}<br><sub>Score: ${score.toFixed(2)}</sub>`;
-
-    // Base layout configuration
+   
     const layout: any = {
-      // 1. Use the Object format for title (highly recommended)
       title: {
         text: titleText,
         font: {
@@ -121,14 +107,13 @@
         xanchor: 'left',
         pad: { t: 10 }
       },
-// 2. Explicitly increase the top margin (t) to prevent clipping
       margin: {
-        t: 100, // Increased to 100px to fit two lines of text
+        t: 100, 
         b: 60,
         l: 60,
         r: 40
       },
-      height: 450, // Slightly taller to account for the extra margin
+      height: 450, 
       autosize: true,
       showlegend: chartType === ChartType.PIE || seriesNum > 1
     };
@@ -137,11 +122,15 @@
       layout.barmode = 'group';
     }
 
-    // 3. Add axes labels for non-pie charts
     if (chartType !== ChartType.PIE) {
       layout.xaxis = { title: { text: xName, standoff: 15 } };
       layout.yaxis = { title: { text: yName, standoff: 15 } };
     }
+
+    if ((chartType === ChartType.LINE || chartType === ChartType.BAR) && view.xFeature.type === ColumnType.TEMPORAL) {
+      layout.xaxis = { type: 'date' };
+    }
+
    return layout;
   }
 
