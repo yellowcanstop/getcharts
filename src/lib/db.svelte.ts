@@ -1,11 +1,10 @@
-// src/lib/db.svelte.ts (updated)
 import * as duckdb from '@duckdb/duckdb-wasm';
 import duckdb_wasm from '@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm?url';
 import mvp_worker from '@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url';
 import duckdb_wasm_eh from '@duckdb/duckdb-wasm/dist/duckdb-eh.wasm?url';
 import eh_worker from '@duckdb/duckdb-wasm/dist/duckdb-browser-eh.worker.js?url';
 import type { ChartView } from './types';
-import { FeatureExtractor } from './feature-extractor';
+import { Analyzer } from './analyzer';
 
 
 class DuckDBManager {
@@ -37,11 +36,11 @@ class DuckDBManager {
   async generateRecommendations() {
     try {
       this.isGenerating = true;
-      const extractor = new FeatureExtractor(this.db!);
-      await extractor.extractFeatures('data');
-      extractor.generateTransformSpecs('data');
-      await extractor.populateTransformedData();
-      this.recommendedCharts = await extractor.generateChartViews('data');
+      const analyzer = new Analyzer(this.db!);
+      await analyzer.extractFeatures('data');
+      analyzer.generateTransformSpecs('data');
+      await analyzer.populateTransformedData();
+      this.recommendedCharts = await analyzer.generateChartViews('data');
     } catch(e) {
       console.error('Failed to generate recommendations:', e);
       throw e;

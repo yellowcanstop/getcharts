@@ -1,7 +1,7 @@
 import { type AsyncDuckDB } from '@duckdb/duckdb-wasm';
 import { type ChartView, ChartType, ColumnType, type ColumnFeatures, type TransformedData, type TransformSpec, TransformType, TimeInterval } from './types';
 
-export class FeatureExtractor {
+export class Analyzer {
   private features = new Map<string, ColumnFeatures>();
   private columnNamesByType: Record<ColumnType, string[]> = {
     [ColumnType.NUMERICAL]: [],
