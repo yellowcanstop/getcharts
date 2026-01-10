@@ -49,7 +49,7 @@
           x: X[i],
           y: Y[i],
           type: chartType === ChartType.LINE ? 'line' : 'bar',
-          mode: chartType === ChartType.LINE ? 'lines+markers' : undefined,
+          mode: chartType === ChartType.LINE ? 'lines' : undefined,
           name: seriesNames?.[i] || `Series ${i + 1}`,
         });
       }
@@ -68,7 +68,7 @@
         return [{
           x: X[0],
           y: Y[0],
-          mode: 'lines+markers',
+          mode: 'lines',
           type: 'line',
         }];
       case ChartType.BAR:

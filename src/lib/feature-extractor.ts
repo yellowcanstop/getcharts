@@ -126,7 +126,7 @@ export class FeatureExtractor {
 
   private generateBasicTransformSpecs(tableName: string, numericalCols: string[]): void {
      for (const [colName, feature] of this.features) {
-      if ((feature.type === ColumnType.CATEGORICAL || feature.type === ColumnType.TEMPORAL) && feature.ratio < 1.0) {
+      if (feature.type === ColumnType.CATEGORICAL && feature.ratio < 1.0) {
         this.transformSpecs.push({
           key: `group_${colName}`,
           sourceTable: tableName,
