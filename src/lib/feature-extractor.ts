@@ -346,8 +346,8 @@ export class FeatureExtractor {
 
   public async generateChartViews(tableName='data'): Promise<ChartView[]> {
     try {
-      await this.createViewsForOriginalData(tableName);
-      this.createViewsForTransformedData();
+      await this.generateOriginalViews(tableName);
+      this.generateTransformedViews();
     } catch (e) {
       console.error('Error generating chart views:', e);
     } finally {
@@ -355,7 +355,7 @@ export class FeatureExtractor {
     }
   }
 
-  private async createViewsForOriginalData(tableName: string): Promise<void> {
+  private async generateOriginalViews(tableName: string): Promise<void> {
     const columns = Array.from(this.features.keys());
 
     for (let i = 0; i < columns.length; i++) {
@@ -385,10 +385,7 @@ export class FeatureExtractor {
     }
   }
 
-  /**
-   * Generate chart views from all materialized transformations
-   */
-  private createViewsForTransformedData(): void {    
+  private generateTransformedViews(): void {    
     for (const spec of this.transformSpecs) {
       const data = this.transformedData[spec.key];
       if (!data || data.length === 0) continue;
@@ -398,9 +395,6 @@ export class FeatureExtractor {
     }
   }
 
-  /**
-   * Create chart view from original table data
-   */
   private async createViewFromOriginalData(
     xCol: string,
     yCol: string,
@@ -445,13 +439,9 @@ export class FeatureExtractor {
     }
   }
 
-  /**
-   * Create chart views from a single transformed dataset
-   */
   private createViewsFromTransformedData(spec: TransformSpec, data: any[]): ChartView[] {
     const views: ChartView[] = [];
     
-    // Determine which columns are dimensions (group) and which are measures (aggregates)
     const groupCols = spec.columns.groupBy || [];
     const isCrossGroup = groupCols.length == 2;
     const aggCols = Object.keys(data[0]).filter(col => 
@@ -459,21 +449,19 @@ export class FeatureExtractor {
     );
 
     if (isCrossGroup) {
-    // Handle cross-group: create multi-series charts
-    views.push(...this.createCrossGroupViews(spec, data, groupCols, aggCols));
+      views.push(...this.createMultiSeriesViews(spec, data, groupCols, aggCols));
     } else {
-    
-    // For each dimension, pair it with each measure
+      // pair each groupBy column with aggregations: (SUM, AVG, COUNT)
       for (const groupCol of groupCols) {
-        // Get the actual column name in the transformed data (might be binned)
-        const actualGroupCol = this.getTransformedColumnName(spec, groupCol);
+        // if !TRANSFORM_TYPE.INTERVAL_BIN, transformed name is the same as original (groupCol)
+        const transformedColName = this.getTransformedColNameForInterval(spec, groupCol);
         
         for (const aggCol of aggCols) {
-          const chartTypes = this.determineTransformedChartTypes(spec, actualGroupCol, aggCol, data);
+          const chartTypes = this.determineTransformedChartTypes(spec, transformedColName, aggCol, data);
           
           for (const chartType of chartTypes) {
-            const view = this.createViewFromTransformedRow(
-              spec, actualGroupCol, aggCol, chartType, data
+            const view = this.createTransformedView(
+              spec, transformedColName, aggCol, chartType, data
             );
             if (view) views.push(view);
           }
@@ -484,110 +472,92 @@ export class FeatureExtractor {
     return views;
   }
 
-  /**
- * Create multi-series chart views from cross-group data
- */
-private createCrossGroupViews(
-  spec: TransformSpec,
-  data: any[],
-  groupCols: string[],
-  aggCols: string[]
-): ChartView[] {
-  const views: ChartView[] = [];
-  const [col1, col2] = groupCols;
-  
-  // Get actual column names (might be binned)
-  const actualCol1 = col1;
-  const actualCol2 = this.getTransformedColumnName(spec, col2);
-  
-  // For each aggregate, create a grouped chart
-  for (const aggCol of aggCols) {
-    // Pivot data: group by col1, create series for each col2 value
-    const col2Values = [...new Set(data.map(row => row[actualCol2]))];
-    const col1Values = [...new Set(data.map(row => row[actualCol1]))];
+  private createMultiSeriesViews(
+    spec: TransformSpec,
+    data: any[],
+    groupCols: string[],
+    aggCols: string[]
+  ): ChartView[] {
+    const views: ChartView[] = [];
+    const [col1, col2] = groupCols;
+    // for cross-group (categorical-temporal) (col2 is binned temporal), get transformed name
+    // for cross-group (categorical-categorical), transformed name is the same as original
+    const transformedCol2 = this.getTransformedColNameForInterval(spec, col2);
     
-    // Skip if too many series (would be unreadable)
-    if (col2Values.length > 10) continue;
-    
-    // Build X and Y arrays for multi-series
-    const X: any[][] = [];
-    const Y: any[][] = [];
-    
-    for (const col2Val of col2Values) {
-      const seriesData = data.filter(row => row[actualCol2] === col2Val);
-      const xVals = seriesData.map(row => row[actualCol1]);
-      const yVals = seriesData.map(row => row[aggCol]);
+    // for each aggregate measure (SUM, AVG, COUNT), create a grouped chart
+    for (const aggCol of aggCols) {
+      // create series for each distinct col2 value
+      // group data by col1 values
+      const col2Values = [...new Set(data.map(row => row[transformedCol2]))];
+      const col1Values = [...new Set(data.map(row => row[col1]))];
       
-      X.push(xVals);
-      Y.push(yVals);
+      // skip if too many series (unreadable)
+      if (col2Values.length > 10) continue;
+      
+      const X: any[][] = [];
+      const Y: any[][] = [];
+      
+      for (const col2Val of col2Values) {
+        const seriesData = data.filter(row => row[transformedCol2] === col2Val);
+        const xVals = seriesData.map(row => row[col1]);
+        const yVals = seriesData.map(row => row[aggCol]);
+        X.push(xVals);
+        Y.push(yVals);
+      }
+      
+      // determine chart type
+      let chartType: ChartType;
+      if (spec.transformType === TransformType.INTERVAL_BIN) {
+        chartType = col1Values.length < 7 ? ChartType.BAR : ChartType.LINE;
+      } else {
+        chartType = ChartType.BAR;
+      }
+      
+      // create view
+      const xFeature: ColumnFeatures = {
+        type: spec.metadata?.xColumnType || ColumnType.CATEGORICAL,
+        min: col1Values[0],
+        max: col1Values[col1Values.length - 1],
+        distinct: col1Values.length,
+        ratio: col1Values.length / data.length
+      };
+      
+      const allYValues = Y.flat();
+      const yFeature: ColumnFeatures = {
+        type: ColumnType.NUMERICAL,
+        min: Math.min(...allYValues),
+        max: Math.max(...allYValues),
+        distinct: new Set(allYValues).size,
+        ratio: new Set(allYValues).size / allYValues.length
+      };
+      
+      views.push({
+        xFeature,
+        yFeature,
+        xName: `${col2} group by ${col1}`,
+        yName: aggCol,
+        seriesNum: col2Values.length,
+        seriesNames: col2Values.map(v => String(v)),
+        X,
+        Y,
+        chartType,
+        score: this.calculateScore(xFeature, yFeature, chartType, data.length),
+        description: `${col2} group by ${col1} vs ${aggCol}`
+      });
     }
     
-    // Determine chart type
-    const isTemporal = spec.transformType === TransformType.INTERVAL_BIN ||
-                       spec.metadata?.interval != null;
-    const distinctCount = col1Values.length;
-    
-    let chartType: ChartType;
-    if (isTemporal) {
-      chartType = distinctCount < 7 ? ChartType.BAR : ChartType.LINE;
-    } else {
-      chartType = ChartType.BAR; // Cross-groups typically use bar charts
-    }
-    
-    // Create synthetic features
-    const xFeature: ColumnFeatures = {
-      type: spec.metadata?.xColumnType || ColumnType.CATEGORICAL,
-      min: col1Values[0],
-      max: col1Values[col1Values.length - 1],
-      distinct: col1Values.length,
-      ratio: col1Values.length / data.length
-    };
-    
-    const allYValues = Y.flat();
-    const yFeature: ColumnFeatures = {
-      type: ColumnType.NUMERICAL,
-      min: Math.min(...allYValues),
-      max: Math.max(...allYValues),
-      distinct: new Set(allYValues).size,
-      ratio: new Set(allYValues).size / allYValues.length
-    };
-    
-    views.push({
-      xFeature,
-      yFeature,
-      xName: actualCol1,
-      yName: aggCol,
-      seriesNum: col2Values.length,
-      seriesNames: col2Values.map(v => String(v)),
-      X,
-      Y,
-      chartType,
-      score: this.calculateScore(xFeature, yFeature, chartType, data.length),
-      description: `${spec.key} - ${actualCol1} vs ${aggCol} (by ${actualCol2})`
-    });
+    return views;
   }
-  
-  return views;
-}
 
-  /**
-   * Get the actual column name in transformed data (handles binned columns)
-   */
-  private getTransformedColumnName(spec: TransformSpec, originalCol: string): string {
-    // Check the transform type and return the appropriate column name
+  private getTransformedColNameForInterval(spec: TransformSpec, originalCol: string): string {
     switch (spec.transformType) {
       case TransformType.INTERVAL_BIN:
         return `${originalCol}/(${spec.metadata?.interval || 'year'})`;
-      case TransformType.GROUP_DISTINCT:
-      case TransformType.PN_BIN:
       default:
         return originalCol;
     }
   }
 
-  /**
-   * Determine chart types for transformed data
-   */
   private determineTransformedChartTypes(
     spec: TransformSpec,
     groupCol: string,
@@ -596,35 +566,22 @@ private createCrossGroupViews(
   ): ChartType[] {
     const charts: ChartType[] = [];
     const distinctCount = new Set(data.map(row => row[groupCol])).size;
-    
-    // Check if it's temporal data
-    const isTemporal = spec.transformType === TransformType.INTERVAL_BIN; 
-    
-    // Check if aggregate has positive values (for pie chart)
     const hasPositiveValues = data.every(row => row[aggCol] > 0);
     
-    if (isTemporal) {
-      // Temporal data: use bar for few points, line for many
+    if (spec.transformType === TransformType.INTERVAL_BIN) {
       charts.push(distinctCount < 7 ? ChartType.BAR : ChartType.LINE);
     } else {
-      // Categorical data
-      //if (hasPositiveValues && distinctCount <= 5 && !this.isAvgColumn(aggCol)) {
       if (hasPositiveValues && this.features.get(groupCol)!.distinct <= 15 && !this.isAvgColumn(aggCol)) {
-
         charts.push(ChartType.PIE);
       }
       if (distinctCount <= 20) {
         charts.push(ChartType.BAR);
       }
     }
-    
     return charts;
   }
 
-  /**
-   * Create a chart view from transformed data
-   */
-  private createViewFromTransformedRow(
+  private createTransformedView(
     spec: TransformSpec,
     groupCol: string,
     aggCol: string,
@@ -636,7 +593,6 @@ private createCrossGroupViews(
     const X = [data.map(row => row[groupCol])];
     const Y = [data.map(row => row[aggCol])];
     
-    // Create synthetic features for the transformed columns
     const xFeature: ColumnFeatures = {
       type: spec.metadata?.xColumnType || ColumnType.CATEGORICAL,
       min: X[0][0],
@@ -667,18 +623,12 @@ private createCrossGroupViews(
     };
   }
 
-  /**
-   * Check if a column name indicates it's an average column
-   */
   private isAvgColumn(feature: ColumnFeatures | string): boolean {
     const name = typeof feature === 'string' ? feature : (feature as any).name;
     if (!name) return false;
     return name.toLowerCase().includes('avg') || name.startsWith('AVG(');
   }
 
-  /**
-   * Calculate score for a chart view
-   */
   private calculateScore(
     xFeature: ColumnFeatures,
     yFeature: ColumnFeatures,
