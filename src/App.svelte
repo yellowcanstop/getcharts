@@ -11,12 +11,13 @@
 
 <main>
   {#if dbManager.status === 'loading'}
-    <p>Welcome to CSV-to-Charts!</p>
+    <p>Welcome to AutoChart!</p>
     <p>Getting things ready for you...</p>
   {:else if dbManager.status === 'error'}
     <p>Error booting DuckDB. Please try again.</p>
   {:else if dbManager.status === 'ready'}
-    <h1>CSV to Charts</h1>
+    <h1>AutoChart</h1>
+    <p>Automatically turn your file into charts, without manually choosing columns, all within your browser.</p>
     {#if dbManager.view === 'upload'}
       <Uploader />
     {:else}
