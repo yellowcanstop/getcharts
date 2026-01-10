@@ -35,13 +35,6 @@ export interface ChartView {
   description: string;
 }
 
-export interface IntervalBin {
-  label: string;
-  startTime: Date;
-  endTime: Date;
-  count: number;
-}
-
 export enum TimeInterval {
   SECOND = 'second',
   MINUTE = 'minute',
@@ -52,8 +45,7 @@ export enum TimeInterval {
 }
 
 export interface TransformedData {
-  // Map of transformation key -> rows
-  // e.g., "group_by_Category" -> [{Category: "A", COUNT: 10, SUM_Sales: 100}, ...]
+  // map of transformation key -> rows
   [key: string]: any[];
 }
 
@@ -65,12 +57,12 @@ export enum TransformType {
 }
 
 export interface TransformSpec {
-  key: string;  // Unique identifier for this transformation
+  key: string; 
   sourceTable: string;
   transformType: TransformType;
   columns: {
-    groupBy?: string[];  // Columns to group by
-    aggregate?: string[];  // Columns to aggregate
+    groupBy?: string[];  // names of columns to group by
+    aggregate?: string[];  // names of columns to aggregate
   };
   metadata?: {
     interval?: string;

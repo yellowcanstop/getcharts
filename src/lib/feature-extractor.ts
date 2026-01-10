@@ -1,15 +1,16 @@
-import type { AsyncDuckDB } from '@duckdb/duckdb-wasm';
+import { type AsyncDuckDB } from '@duckdb/duckdb-wasm';
 import { type ChartView, ChartType, ColumnType, type ColumnFeatures, type TransformedData, type TransformSpec, TransformType, TimeInterval } from './types';
 
 export class FeatureExtractor {
-  private transformSpecs: TransformSpec[] = [];
-  public transformedData: TransformedData = {};
-  public features = new Map<string, ColumnFeatures>();
-  public columnNamesByType: Record<ColumnType, string[]> = {
+  private features = new Map<string, ColumnFeatures>();
+  private columnNamesByType: Record<ColumnType, string[]> = {
     [ColumnType.NUMERICAL]: [],
     [ColumnType.CATEGORICAL]: [],
     [ColumnType.TEMPORAL]: []
   }
+  private transformSpecs: TransformSpec[] = [];
+  private transformedData: TransformedData = {};
+  private views: ChartView[] = [];
   
   constructor(private db: AsyncDuckDB) {}
 
@@ -288,17 +289,11 @@ export class FeatureExtractor {
 
       case TransformType.CROSS_GROUP: {
         if (metadata?.interval && metadata?.binCol) {
-          // Cross-column with binning
+          // cross group with interval binning
           const [col1, col2] = groupBy;
           const binCol = metadata.binCol;
-          let binExpr = `"${binCol}"`;
-          let orderByExpr = `"${binCol}"`;
-          //let orderBy = '';
-
-          binExpr = this.getTimeBinExpression(binCol, metadata.interval || 'year');
-          orderByExpr = binExpr;
-
-          const orderBy = orderByExpr ? `ORDER BY "${col1}", ${orderByExpr}` : '';
+          const binExpr = this.getTimeBinExpression(binCol, metadata.interval || 'year');
+          const orderBy = binExpr ? `ORDER BY "${col1}", ${binExpr}` : '';
 
           return `
             SELECT 
@@ -312,7 +307,7 @@ export class FeatureExtractor {
             ${orderBy}
           `;
         } else {
-          // Simple cross-group
+          // simple cross categorical group
           const groupCols = groupBy.map(c => `"${c}"`).join(', ');
           return `
             SELECT 
@@ -335,7 +330,6 @@ export class FeatureExtractor {
     return this.transformedData[key] || [];
   }
 
-  // Helper methods
   private getTimeBinExpression(colName: string, interval: string): string {
     const intervalMap: Record<string, string> = {
       'second': `date_trunc('second', "${colName}")`,
@@ -350,19 +344,20 @@ export class FeatureExtractor {
     return intervalMap[interval] || intervalMap['year'];
   }
 
-  public async generateChartViews(tableName = 'data'): Promise<ChartView[]> {
-    const views: ChartView[] = [];
-    const originalViews = await this.generateOriginalDataViews(tableName);
-    views.push(...originalViews);
-    const transformedViews = await this.generateTransformedDataViews();
-    views.push(...transformedViews);
-    return views;
+  public async generateChartViews(tableName='data'): Promise<ChartView[]> {
+    try {
+      await this.createViewsForOriginalData(tableName);
+      this.createViewsForTransformedData();
+    } catch (e) {
+      console.error('Error generating chart views:', e);
+    } finally {
+      return this.views;
+    }
   }
 
-  private async generateOriginalDataViews(tableName: string): Promise<ChartView[]> {
-    const views: ChartView[] = [];
+  private async createViewsForOriginalData(tableName: string): Promise<void> {
     const columns = Array.from(this.features.keys());
-    
+
     for (let i = 0; i < columns.length; i++) {
       for (let j = 0; j < columns.length; j++) {
         if (i === j) continue;
@@ -371,36 +366,38 @@ export class FeatureExtractor {
         const yCol = columns[j];
         const xFeature = this.features.get(xCol)!;
         const yFeature = this.features.get(yCol)!;
-        
-        const chartTypes = this.determine2DChartTypes(xFeature, yFeature, i, j);
+
+        let chartType: ChartType;
+        if (xFeature.type === ColumnType.NUMERICAL && yFeature.type === ColumnType.NUMERICAL && i < j) {
+          chartType = ChartType.SCATTER;
+        }
+        if (xFeature.type === ColumnType.TEMPORAL && yFeature.type === ColumnType.NUMERICAL && i < j) {
+          chartType = ChartType.LINE;
+        }
+
+        const chartTypes = this.getChartTypesForOriginal(xFeature, yFeature, i, j);
         
         for (const chartType of chartTypes) {
           const view = await this.createViewFromOriginalData(
             xCol, yCol, xFeature, yFeature, chartType, tableName
           );
-          if (view) views.push(view);
+          if (view) this.views.push(view);
         }
       }
     }
-    
-    return views;
   }
 
   /**
    * Generate chart views from all materialized transformations
    */
-  private generateTransformedDataViews(): Promise<ChartView[]> {
-    const views: ChartView[] = [];
-    
+  private createViewsForTransformedData(): void {    
     for (const spec of this.transformSpecs) {
       const data = this.transformedData[spec.key];
       if (!data || data.length === 0) continue;
       
       const transformViews = this.createViewsFromTransformedData(spec, data);
-      views.push(...transformViews);
+      this.views.push(...transformViews);
     }
-    
-    return Promise.resolve(views);
   }
 
   /**
@@ -419,26 +416,14 @@ export class FeatureExtractor {
     try {
       let query: string;
       
-      if (chartType === ChartType.BAR || chartType === ChartType.PIE) {
-        // Aggregate data for bar/pie charts
-        query = `
-          SELECT 
-            "${xCol}" as x, 
-            SUM("${yCol}") as y
-          FROM ${tableName}
-          WHERE "${xCol}" IS NOT NULL AND "${yCol}" IS NOT NULL
-          GROUP BY "${xCol}"
-          ORDER BY "${xCol}"
-        `;
-      } else {
-        // Raw data for scatter/line charts
+      
         query = `
           SELECT "${xCol}" as x, "${yCol}" as y
           FROM ${tableName}
           WHERE "${xCol}" IS NOT NULL AND "${yCol}" IS NOT NULL
           ORDER BY "${xCol}"
         `;
-      }
+      
       
       const result = await conn.query(query);
       const rows = result.toArray().map(row => this.convertBigIntToNumber(row));
@@ -628,7 +613,9 @@ private createCrossGroupViews(
       charts.push(distinctCount < 7 ? ChartType.BAR : ChartType.LINE);
     } else {
       // Categorical data
-      if (hasPositiveValues && distinctCount <= 5 && !this.isAvgColumn(aggCol)) {
+      //if (hasPositiveValues && distinctCount <= 5 && !this.isAvgColumn(aggCol)) {
+      if (hasPositiveValues && this.features.get(groupCol)!.distinct <= 15 && !this.isAvgColumn(aggCol)) {
+
         charts.push(ChartType.PIE);
       }
       if (distinctCount <= 20) {
@@ -685,61 +672,32 @@ private createCrossGroupViews(
     };
   }
 
-  /**
-   * Determine chart types for 2D views (original data)
-   */
-  private determine2DChartTypes(
-    fi: ColumnFeatures, 
-    fj: ColumnFeatures, 
-    i: number, 
-    j: number
-  ): ChartType[] {
-    if (fi.type === ColumnType.CATEGORICAL && 
-        fj.type === ColumnType.NUMERICAL && 
-        fi.ratio === 1.0) {
-      return this.getCategoricalNumericalCharts(fi, fj);
+  private getChartTypesForOriginal(fi: ColumnFeatures, fj: ColumnFeatures, i: number, j: number): ChartType[] {
+    /*
+    if (fi.type === ColumnType.CATEGORICAL && fj.type === ColumnType.NUMERICAL && fi.ratio === 1.0) {
+      if (fi.distinct <= 10 && fj.min !== null && fj.min > 0) {
+        return [ChartType.PIE];
+      }
+      return [ChartType.BAR];
     }
   
-    if (fi.type === ColumnType.TEMPORAL && 
-        fj.type === ColumnType.NUMERICAL && 
-        fi.ratio === 1.0) {
+    if (fi.type === ColumnType.TEMPORAL && fj.type === ColumnType.NUMERICAL && fi.ratio === 1.0) {
       return this.getTemporalNumericalCharts(fi.distinct);
     }
-    
+    */
     if (fi.type === ColumnType.NUMERICAL && 
         fj.type === ColumnType.NUMERICAL && 
         i < j) {
       return [ChartType.SCATTER];
     }
-  
+    
+    if (fi.type === ColumnType.TEMPORAL && fj.type === ColumnType.NUMERICAL && i < j) {
+      return [ChartType.LINE]
+    }
+
     return [];
   }
 
-  /**
-   * Get chart types for categorical vs numerical data
-   */
-  private getCategoricalNumericalCharts(fi: ColumnFeatures, fj: ColumnFeatures): ChartType[] {
-    const charts: ChartType[] = [];
-    
-    // Pie chart: positive values, small number of categories
-    if (fj.min !== undefined && fj.min > 0 && fi.distinct <= 5 && !this.isAvgColumn(fj)) {
-      charts.push(ChartType.PIE);
-    }
-    
-    // Bar chart: reasonable number of categories
-    if (fi.distinct <= 20) {
-      charts.push(ChartType.BAR);
-    }
-    
-    return charts;
-  }
-
-  /**
-   * Get chart types for temporal vs numerical data
-   */
-  private getTemporalNumericalCharts(distinctCount: number): ChartType[] {
-    return distinctCount < 7 ? [ChartType.BAR] : [ChartType.LINE];
-  }
 
   /**
    * Check if a column name indicates it's an average column
