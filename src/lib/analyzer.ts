@@ -128,7 +128,7 @@ export class Analyzer {
      for (const [colName, feature] of this.features) {
       if (feature.type === ColumnType.CATEGORICAL && feature.ratio < 1.0) {
         this.transformSpecs.push({
-          key: `group_${colName}`,
+          key: `${colName}`,
           sourceTable: tableName,
           transformType: TransformType.GROUP_DISTINCT,
           columns: { groupBy: [colName], aggregate: numericalCols },
@@ -138,7 +138,7 @@ export class Analyzer {
 
       if (feature.type === ColumnType.TEMPORAL) {
         this.transformSpecs.push({
-          key: `interval_${colName}`,
+          key: `${colName}`,
           sourceTable: tableName,
           transformType: TransformType.INTERVAL_BIN,
           columns: { groupBy: [colName], aggregate: numericalCols },
@@ -148,7 +148,7 @@ export class Analyzer {
 
       if (feature.type === ColumnType.NUMERICAL && feature.min != null && feature.min < 0 && feature.max != null && feature.max > 0) {
         this.transformSpecs.push({
-          key: `pn_${colName}`,
+          key: `${colName}`,
           sourceTable: tableName,
           transformType: TransformType.PN_BIN,
           columns: { groupBy: [colName], aggregate: numericalCols },
@@ -165,9 +165,11 @@ export class Analyzer {
       for (const [col2, feature2] of this.features) {
         if (col1 === col2) continue;
 
+        const columnNames = JSON.stringify([col1, col2])
+
         if (feature2.type === ColumnType.CATEGORICAL) {
           this.transformSpecs.push({
-            key: `cross_${col1}_${col2}`,
+            key: `${columnNames}`,
             sourceTable: tableName,
             transformType: TransformType.CROSS_GROUP,
             columns: { groupBy: [col1, col2], aggregate: numericalCols },
@@ -177,7 +179,7 @@ export class Analyzer {
 
         if (feature2.type === ColumnType.TEMPORAL) {
           this.transformSpecs.push({
-            key: `cross_${col1}_interval_${col2}`,
+            key: `${columnNames}`,
             sourceTable: tableName,
             transformType: TransformType.CROSS_GROUP,
             columns: { groupBy: [col1, col2], aggregate: numericalCols },
@@ -193,7 +195,7 @@ export class Analyzer {
 
     const conn = await this.db.connect();
     try {
-      // group queries by column signature to ensure UNION compatibility
+      // group queries by column count to ensure UNION compatibility
       const queryGroups = new Map<string, { spec: TransformSpec; sql: string }[]>();
       for (const spec of this.transformSpecs) {
         const sql = this.buildTransformSQL(spec);
@@ -220,7 +222,16 @@ export class Analyzer {
             }
             // remove the internal key before storing
             const { _transform_key, ...data } = this.convertBigIntToNumber(row);
-            this.transformedData[key].push(data);
+            
+            /*
+            SQL UNION uses column names from the first query by default.
+            However, queries in a batch (query group) have different column names.
+            Hence, my workaround is to use a generic alias (_group_col_0, _group_col_1) in the SQL queries,
+            and rename back to the original column names (stringified to be _transform_key).
+            */
+            const renamedData = this.renameToOriginalColNames(key, data)
+            
+            this.transformedData[key].push(renamedData);
           }
         }
       }
@@ -251,8 +262,8 @@ export class Analyzer {
         return `
           SELECT 
             '${key}' as _transform_key,
-            "${groupCol}",
-            COUNT(*) as "COUNT(${groupCol})"
+            "${groupCol}" as _group_col_0,
+            COUNT(*) as _count
             ${numericalAggs.length > 0 ? ', ' + numericalAggs.join(', ') : ''}
           FROM ${sourceTable}
           GROUP BY "${groupCol}"
@@ -266,8 +277,8 @@ export class Analyzer {
         return `
           SELECT 
             '${key}' as _transform_key,
-            ${binExpr} as "${groupCol}/(${interval})",
-            COUNT(*) as "COUNT(${groupCol})"
+            ${binExpr} as _group_col_0,
+            COUNT(*) as _count
             ${numericalAggs.length > 0 ? ', ' + numericalAggs.join(', ') : ''}
           FROM ${sourceTable}
           GROUP BY ${binExpr}
@@ -280,8 +291,8 @@ export class Analyzer {
         return `
           SELECT 
             '${key}' as _transform_key,
-            CASE WHEN "${groupCol}" > 0 THEN '>0' ELSE '<=0' END as "${groupCol}",
-            COUNT(*) as "COUNT(${groupCol})"
+            CASE WHEN "${groupCol}" > 0 THEN '>0' ELSE '<=0' END as _group_col_0,
+            COUNT(*) as _count
           FROM ${sourceTable}
           GROUP BY CASE WHEN "${groupCol}" > 0 THEN '>0' ELSE '<=0' END
         `;
@@ -292,14 +303,14 @@ export class Analyzer {
           // cross group with interval binning
           const [col1, col2] = groupBy;
           const binCol = metadata.binCol;
-          const binExpr = this.getTimeBinExpression(binCol, metadata.interval || 'year');
+          const binExpr = this.getTimeBinExpression(binCol, metadata.interval);
           const orderBy = binExpr ? `ORDER BY "${col1}", ${binExpr}` : '';
 
           return `
             SELECT 
               '${key}' as _transform_key,
-              "${col1}",
-              ${binExpr} as "${binCol}",
+              "${col1}" as _group_col_0,
+              ${binExpr} as _group_col_1,
               COUNT(*) as "COUNT"
               ${numericalAggs.length > 0 ? ', ' + numericalAggs.join(', ') : ''}
             FROM ${sourceTable}
@@ -308,15 +319,16 @@ export class Analyzer {
           `;
         } else {
           // simple cross categorical group
-          const groupCols = groupBy.map(c => `"${c}"`).join(', ');
+          const [col1, col2] = groupBy;
           return `
             SELECT 
               '${key}' as _transform_key,
-              ${groupCols},
+              "${col1}" as _group_col_0,
+              "${col2}" as _group_col_1,
               COUNT(*) as "COUNT"
               ${numericalAggs.length > 0 ? ', ' + numericalAggs.join(', ') : ''}
             FROM ${sourceTable}
-            GROUP BY ${groupCols}
+            GROUP BY "${col1}", "${col2}"
           `;
         }
       }
@@ -326,6 +338,29 @@ export class Analyzer {
     }
   }
 
+  private renameToOriginalColNames(key: string, data: any): any {
+    const renamed: any = { ...data }; // shallow copy
+
+    // cross-column transforms have two group columns
+    if ('_group_col_0' in data && '_group_col_1' in data) {
+      const cols = JSON.parse(key);
+      renamed[cols[0]] = data['_group_col_0'];
+      delete renamed['_group_col_0'];
+      renamed[cols[1]] = data['_group_col_1'];
+      delete renamed['_group_col_1'];
+    } else if ('_group_col_0' in data) {
+      renamed[key] = data['_group_col_0'];
+      delete renamed['_group_col_0'];
+      if ('_count' in data) {
+        const countCol = `COUNT(${key})`;
+        renamed[countCol] = data['_count'];
+        delete renamed['_count'];
+      }
+    }
+
+    return renamed;    
+  }
+ 
   public getTransformedData(key: string): any[] {
     return this.transformedData[key] || [];
   }
@@ -453,7 +488,7 @@ export class Analyzer {
     } else {
       // pair each groupBy column with aggregations: (SUM, AVG, COUNT)
       for (const groupCol of groupCols) {
-        // if !TRANSFORM_TYPE.INTERVAL_BIN, transformed name is the same as original (groupCol)
+        // if !TransformType.INTERVAL_BIN, transformed name is the same as original (groupCol)
         const transformedColName = this.getTransformedColNameForInterval(spec, groupCol);
         
         for (const aggCol of aggCols) {
@@ -483,7 +518,7 @@ export class Analyzer {
     // for cross-group (categorical-temporal) (col2 is binned temporal), get transformed name
     // for cross-group (categorical-categorical), transformed name is the same as original
     const transformedCol2 = this.getTransformedColNameForInterval(spec, col2);
-    
+
     // for each aggregate measure (SUM, AVG, COUNT), create a grouped chart
     for (const aggCol of aggCols) {
       // create series for each distinct col2 value
