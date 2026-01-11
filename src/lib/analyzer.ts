@@ -127,8 +127,9 @@ export class Analyzer {
   private generateBasicTransformSpecs(tableName: string, numericalCols: string[]): void {
      for (const [colName, feature] of this.features) {
       if (feature.type === ColumnType.CATEGORICAL && feature.ratio < 1.0) {
+        const key = JSON.stringify([colName, colName])
         this.transformSpecs.push({
-          key: `${colName}`,
+          key: `${key}`,
           sourceTable: tableName,
           transformType: TransformType.GROUP_DISTINCT,
           columns: { groupBy: [colName], aggregate: numericalCols },
@@ -137,18 +138,22 @@ export class Analyzer {
       }
 
       if (feature.type === ColumnType.TEMPORAL) {
+        const interval = feature.interval;
+        const intervalCol = `${colName}/(${interval})`;
+        const key = JSON.stringify([intervalCol, colName])
         this.transformSpecs.push({
-          key: `${colName}`,
+          key: `${key}`,
           sourceTable: tableName,
           transformType: TransformType.INTERVAL_BIN,
           columns: { groupBy: [colName], aggregate: numericalCols },
-          metadata: { interval: feature.interval, xColumnType: feature.type }
+          metadata: { interval: interval, xColumnType: feature.type }
         });
       }
 
       if (feature.type === ColumnType.NUMERICAL && feature.min != null && feature.min < 0 && feature.max != null && feature.max > 0) {
+        const key = JSON.stringify([colName, colName])
         this.transformSpecs.push({
-          key: `${colName}`,
+          key: `${key}`,
           sourceTable: tableName,
           transformType: TransformType.PN_BIN,
           columns: { groupBy: [colName], aggregate: numericalCols },
@@ -165,11 +170,10 @@ export class Analyzer {
       for (const [col2, feature2] of this.features) {
         if (col1 === col2) continue;
 
-        const columnNames = JSON.stringify([col1, col2])
-
         if (feature2.type === ColumnType.CATEGORICAL) {
+          const key = JSON.stringify([col1, col2])
           this.transformSpecs.push({
-            key: `${columnNames}`,
+            key: `${key}`,
             sourceTable: tableName,
             transformType: TransformType.CROSS_GROUP,
             columns: { groupBy: [col1, col2], aggregate: numericalCols },
@@ -178,12 +182,15 @@ export class Analyzer {
         }
 
         if (feature2.type === ColumnType.TEMPORAL) {
+          const interval = feature2.interval || 'year';
+          const intervalCol1 = `${col1}/(${interval})`;
+          const key = JSON.stringify([intervalCol1, col2])
           this.transformSpecs.push({
-            key: `${columnNames}`,
+            key: `${key}`,
             sourceTable: tableName,
             transformType: TransformType.CROSS_GROUP,
             columns: { groupBy: [col1, col2], aggregate: numericalCols },
-            metadata: { binCol: col2, interval: feature2.interval, xColumnType: ColumnType.CATEGORICAL }
+            metadata: { binCol: col2, interval: interval, xColumnType: ColumnType.CATEGORICAL }
           });
         }
       }
@@ -272,7 +279,7 @@ export class Analyzer {
 
       case TransformType.INTERVAL_BIN: {
         const groupCol = groupBy[0];
-        const interval = metadata?.interval || 'year';
+        const interval = metadata!.interval!;
         const binExpr = this.getTimeBinExpression(groupCol, interval);
         return `
           SELECT 
@@ -340,19 +347,23 @@ export class Analyzer {
 
   private renameToOriginalColNames(key: string, data: any): any {
     const renamed: any = { ...data }; // shallow copy
-
-    // cross-column transforms have two group columns
+    const cols = JSON.parse(key);
     if ('_group_col_0' in data && '_group_col_1' in data) {
-      const cols = JSON.parse(key);
+      // cross-column transforms
       renamed[cols[0]] = data['_group_col_0'];
       delete renamed['_group_col_0'];
       renamed[cols[1]] = data['_group_col_1'];
       delete renamed['_group_col_1'];
     } else if ('_group_col_0' in data) {
-      renamed[key] = data['_group_col_0'];
+      // basic transforms
+      // for TransformType.INTERVAL_BIN, cols[0] is "${groupCol}/(${interval})"
+      // for other basic transforms, cols[0] is "${groupCol}"
+      renamed[cols[0]] = data['_group_col_0'];
       delete renamed['_group_col_0'];
       if ('_count' in data) {
-        const countCol = `COUNT(${key})`;
+        // for TransformType.INTERVAL_BIN, cols[1] is "${groupCol}"
+        // for other basic transforms, cols[1] is "${groupCol}"
+        const countCol = `COUNT(${cols[1]})`;
         renamed[countCol] = data['_count'];
         delete renamed['_count'];
       }
@@ -376,7 +387,7 @@ export class Analyzer {
       'quarter': `date_trunc('quarter', "${colName}")`,
       'year': `date_trunc('year', "${colName}")`
     };
-    return intervalMap[interval] || intervalMap['year'];
+    return intervalMap[interval];
   }
 
   public async generateChartViews(tableName='data'): Promise<ChartView[]> {
@@ -627,7 +638,7 @@ export class Analyzer {
     
     const X = [data.map(row => row[groupCol])];
     const Y = [data.map(row => row[aggCol])];
-    
+
     const xFeature: ColumnFeatures = {
       type: spec.metadata?.xColumnType || ColumnType.CATEGORICAL,
       min: X[0][0],
@@ -654,7 +665,7 @@ export class Analyzer {
       Y,
       chartType,
       score: this.calculateScore(xFeature, yFeature, chartType, data.length),
-      description: `${spec.key} - ${groupCol} vs ${aggCol}`
+      description: `${groupCol} vs ${aggCol}`
     };
   }
 
