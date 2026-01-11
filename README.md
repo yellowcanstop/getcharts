@@ -6,7 +6,10 @@ This means your uploaded csv file never leaves your computer.
 AutoChart is a Svelte single-page application using DuckDB-Wasm for the in-browser SQL database and Plotly.js for chart rendering.
 
 ## TODO
-- filter out broken charts (see .some() to check for null)
-- add model's ranking of charts
+- broken charts:
+avocado, googleplay: year as legend
+flight: destcity group by carrier vs sum(arrdelay)
+
 - grid view of charts
 - demo csv
+- add model's ranking of charts
