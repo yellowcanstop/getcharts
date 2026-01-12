@@ -29,10 +29,7 @@
     dbManager.recommendedCharts.forEach(view => {
       const chartDiv = document.createElement('div');
       chartDiv.className = 'chart-item';
-      //const viewDiv = document.createElement('pre');
-      //viewDiv.textContent = JSON.stringify(view, null, 2);
       chartsContainer.appendChild(chartDiv);
-      //chartsContainer.appendChild(viewDiv);
 
       const data = createPlotlyData(view);
       const layout = createPlotlyLayout(view);

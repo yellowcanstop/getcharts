@@ -28,21 +28,6 @@ export class Analyzer {
     return ColumnType.CATEGORICAL;
   }
 
-  /*
-    DuckDB-WASM returns Uint32Arrays64 where first element holds the number, for result of SUM, etc.
-    For example, at runtime:
-    Uint32Array(4) [3448, 0, 0, 0, buffer: ArrayBuffer(7490), byteLength: 16, byteOffset: 5432, length: 4, Symbol(Symbol.toStringTag): 'Uint32Array'] 
-  */
-  private handleTypedArrays(value: any): number {
-    if (value == null) return 0; // handle null or undefined
-    if (ArrayBuffer.isView(value)) { // check if indexable
-      if (value instanceof Uint32Array || value instanceof Float64Array || value instanceof Int32Array) {
-        return value[0];
-      }
-    }
-    return typeof value === 'number' ? value : 0;
-  }
-
   private convertBigIntToNumber(row: any): any {
     const converted: any = {};
     for (const [key, value] of Object.entries(row)) {
@@ -273,8 +258,8 @@ export class Analyzer {
     const { groupBy = [], aggregate = [] } = columns;
 
     const numericalAggs = aggregate.flatMap(col => [
-      `SUM("${col}") as "SUM(${col})"`,
-      `AVG("${col}") as "AVG(${col})"`
+      `SUM("${col}")::DOUBLE as "SUM(${col})"`,
+      `AVG("${col}")::DOUBLE as "AVG(${col})"`
     ]);
 
     switch (transformType) {
@@ -560,7 +545,7 @@ export class Analyzer {
       for (const col2Val of col2Values) {
         const seriesData = data.filter(row => row[transformedCol2] === col2Val);
         const xVals = seriesData.map(row => row[col1]);
-        const yVals = seriesData.map(row => this.handleTypedArrays(row[aggCol]));
+        const yVals = seriesData.map(row => row[aggCol]);
         X.push(xVals);
         Y.push(yVals);
       }
@@ -651,7 +636,7 @@ export class Analyzer {
     if (data.length === 0) return null;
     
     const X = [data.map(row => row[groupCol])];
-    const Y = [data.map(row => this.handleTypedArrays(row[aggCol]))];
+    const Y = [data.map(row => row[aggCol])];
 
     const xFeature: ColumnFeatures = {
       type: spec.metadata?.xColumnType || ColumnType.CATEGORICAL,
