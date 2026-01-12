@@ -7,7 +7,6 @@ AutoChart is a Svelte single-page application using DuckDB-Wasm for the in-brows
 
 ## TODO
 - broken charts:
-avocado, googleplay: year as legend
 flight: destcity group by carrier vs sum(arrdelay)
 
 - grid view of charts

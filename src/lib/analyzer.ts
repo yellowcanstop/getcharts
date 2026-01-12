@@ -198,8 +198,7 @@ export class Analyzer {
 
         if (feature2.type === ColumnType.TEMPORAL) {
           const interval = feature2.interval || 'year';
-          const intervalCol1 = `${col1}/(${interval})`;
-          const key = JSON.stringify([intervalCol1, col2])
+          const key = JSON.stringify([col1, col2])
           this.transformSpecs.push({
             key: `${key}`,
             sourceTable: tableName,
