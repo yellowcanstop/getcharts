@@ -30,7 +30,25 @@
     const target = event.target as HTMLInputElement;
     if (target.files?.length) handleFile(target.files[0]);
   }
+
+  async function loadRemoteSample(fileName: string) {
+    try {
+      error = ""; 
+
+      const response = await fetch(`/samples/${fileName}`);
+      if (!response.ok) throw new Error("Could not find the sample file.");
+
+      const blob = await response.blob();
+      const file = new File([blob], fileName, { type: 'text/csv' });
+
+      await handleFile(file);
+    } catch (e: any) {
+      error = "Error loading sample: " + e.message;
+    }
+  }
 </script>
+
+<h3>Upload any CSV file:</h3>
 
 <div
   class="uploader"
@@ -44,11 +62,19 @@
   role="region"
   aria-label="Upload files by dragging and dropping or selecting"
 >
-  <h2>Upload your file</h2>
-  <p>Select a CSV file to get charts.</p>
   <input type="file" accept=".csv" onchange={onFileChange} />
+
   {#if error}
     <p class="error">{error}</p>
   {/if}
 </div>
-  
+
+<div class="samples-grid">
+  <p>Don't have data? Try a sample:</p>
+  <button type="button" onclick={() => loadRemoteSample('flight-stats.csv')}>
+    flight_statistics.csv
+  </button>
+  <button type="button" onclick={() => loadRemoteSample('olympic.csv')}>
+    olympic_performance.csv
+  </button>
+</div>
