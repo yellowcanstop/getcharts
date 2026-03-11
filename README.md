@@ -1,4 +1,7 @@
 # AutoChart
+
+Deployed on Github Pages: https://yellowcanstop.github.io/getcharts/
+
 AutoChart automatically turns your file into charts, without manually choosing columns, all within your browser.
 
 This means your uploaded csv file never leaves your computer.
