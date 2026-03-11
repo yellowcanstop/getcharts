@@ -5,37 +5,32 @@
   import { ChartType, ColumnType, type ChartView } from './types';
 
   let error = $state("");
-  let chartsContainer: HTMLDivElement;
+  let selectedChart = $state<ChartView | null>(null);
 
   onMount(async () => {
     try {
       await dbManager.generateRecommendations();
-      renderCharts();
     } catch (e: any) {
       error = "Failed to generate charts: " + e.message;
     }
   });
-  
-  function renderCharts() {
-    if (!chartsContainer) return;
-    
-    chartsContainer.innerHTML = '';
-    
-    if (dbManager.recommendedCharts.length === 0) {
-      chartsContainer.innerHTML = '<p class="no-charts">No charts were generated. Try a different dataset.</p>';
-      return;
-    }
 
-    dbManager.recommendedCharts.forEach(view => {
-      const chartDiv = document.createElement('div');
-      chartDiv.className = 'chart-item';
-      chartsContainer.appendChild(chartDiv);
-
-      const data = createPlotlyData(view);
-      const layout = createPlotlyLayout(view);
-      
-      Plotly.newPlot(chartDiv, data, layout, { responsive: true });
+  // Svelte 'Action' to initialize Plotly on the element.
+  // Runs when the element enters the DOM.
+  function plotlyAction(node: HTMLElement, { view, isLarge }: { view: ChartView, isLarge: boolean }) {
+    const data = createPlotlyData(view);
+    const layout = createPlotlyLayout(view, isLarge);
+    
+    Plotly.newPlot(node, data, layout, { 
+      responsive: true,
+      displayModeBar: isLarge
     });
+
+    return {
+      destroy() {
+        Plotly.purge(node);
+      }
+    };
   }
   
   function createPlotlyData(view: ChartView) {
@@ -88,34 +83,45 @@
     }
   }
 
-  function createPlotlyLayout(view: any) {
+  function createPlotlyLayout(view: any, isLarge: boolean) {
     const { xName, yName, chartType, score, description, seriesNum } = view;
     
     const chartTypeNames = ['Scatter Plot', 'Line Chart', 'Bar Chart', 'Pie Chart'];
     const typeLabel = chartTypeNames[chartType] || 'Chart';
     const titleText = `<b>${typeLabel}</b>: ${description}<br><span style="font-size: 12px; color: #666;">Score: ${score.toFixed(2)}</span>`;
+    const fontSize = isLarge ? 12 : 8;      
+    const labelSize = isLarge ? 14 : 8;    
+    const titleSize = isLarge ? 14 : 9;
    
     const layout: any = {
       title: {
-        text: titleText,
+        text: isLarge ? titleText : '',
         font: {
           family: 'Arial, sans-serif',
-          size: 16,
+          size: titleSize,
           color: '#333'
         },
         x: 0.05,
         xanchor: 'left',
         pad: { t: 10 }
       },
-      margin: {
-        t: 100, 
+      margin: isLarge? {
+        t: 80, 
         b: 60,
         l: 60,
         r: 40
+      } : {
+        t: 10,
+        b: 10,
+        l: 10,
+        r: 10
       },
-      height: 450, 
+      height: isLarge? 400 : 150, 
+      width: isLarge? 600 : 300,
       autosize: true,
-      showlegend: chartType === ChartType.PIE || seriesNum > 1
+      showlegend: isLarge && (chartType === ChartType.PIE || seriesNum > 1),
+      paper_bgcolor: 'rgba(0,0,0,0)',
+      plot_bgcolor: 'rgba(0,0,0,0)',
     };
 
     if (chartType === ChartType.BAR && seriesNum > 1) {
@@ -123,12 +129,50 @@
     }
 
     if (chartType !== ChartType.PIE) {
-      layout.xaxis = { title: { text: xName, standoff: 15 } };
-      layout.yaxis = { title: { text: yName, standoff: 15 } };
+      layout.xaxis = { 
+        title: { 
+          text: xName, 
+          font: { size: labelSize },
+          standoff: 15 
+        },
+        tickfont: { size: fontSize },
+        automargin: true
+      };
+      layout.yaxis = { 
+        title: { 
+          text: yName,
+          font: { size: labelSize },
+          standoff: 15 
+        },
+        tickfont: { size: fontSize },
+        automargin: true
+      };
     }
 
     if ((chartType === ChartType.LINE || chartType === ChartType.BAR) && view.xFeature.type === ColumnType.TEMPORAL) {
-      layout.xaxis = { type: 'date' };
+      layout.xaxis = { 
+        type: 'date',
+        title: { 
+          text: xName, 
+          font: { size: labelSize },
+          standoff: 15 
+        },
+        tickfont: { size: fontSize },
+        automargin: true 
+      };
+    }
+
+    if (chartType === ChartType.BAR) {
+      layout.yaxis = {
+        title: { 
+          text: yName,
+          font: { size: labelSize },
+          standoff: 15 
+        },
+        tickfont: { size: fontSize },
+        automargin: true,
+        rangemode: 'tozero'
+      };
     }
 
    return layout;
@@ -153,6 +197,22 @@
   {:else if dbManager.recommendedCharts.length === 0}
     <p class="no-charts">No charts were generated. Try a different dataset.</p>
   {:else}
-    <div bind:this={chartsContainer} class="charts-container"></div>
+    <div class="charts-grid">
+      {#each dbManager.recommendedCharts as view}
+        <button class="chart-card" onclick={() => selectedChart = view}>
+          <div use:plotlyAction={{ view, isLarge: false }}></div>
+          <p class="chart-label">{view.description}</p>
+        </button>
+      {/each}
+    </div>
+  {/if}
+
+  {#if selectedChart}
+    <div class="modal-backdrop" onclick={() => selectedChart = null} aria-hidden="true">
+      <div class="modal-content" onclick={(e) => e.stopPropagation()} aria-hidden="true">
+        <button class="close-btn" onclick={() => selectedChart = null}>✕</button>
+        <div class="full-chart" use:plotlyAction={{ view: selectedChart, isLarge: true }}></div>
+      </div>
+    </div>
   {/if}
 </div>
