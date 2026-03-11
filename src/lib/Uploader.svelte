@@ -35,7 +35,7 @@
     try {
       error = ""; 
 
-      const response = await fetch(`/samples/${fileName}`);
+      const response = await fetch(`${import.meta.env.BASE_URL}samples/${fileName}`);
       if (!response.ok) throw new Error("Could not find the sample file.");
 
       const blob = await response.blob();
